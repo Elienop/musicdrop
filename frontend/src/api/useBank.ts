@@ -297,6 +297,10 @@ async function decideBankItem(
  * store-only write — it NEVER needs the import slot (the backend queues the
  * row; its apply runner waits for the slot on its own). Invalidates every
  * bank query on settle so the list shows the row as queued/ignored.
+ *
+ * This hook and the four below also refresh "Not imported yet": an ignored or
+ * removed row stops holding its folder, which is listed again at once rather
+ * than after the next 30 s poll.
  */
 export function useBankDecision(itemId: string) {
   const queryClient = useQueryClient();
@@ -304,6 +308,7 @@ export function useBankDecision(itemId: string) {
     mutationFn: (decision: BankDecision) => decideBankItem(itemId, decision),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["bank"] });
+      void queryClient.invalidateQueries({ queryKey: ["inbox-items"] });
     },
   });
 }
@@ -317,6 +322,7 @@ export function useIgnoreBankItem() {
       decideBankItem(itemId, { action: "ignore" }),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["bank"] });
+      void queryClient.invalidateQueries({ queryKey: ["inbox-items"] });
     },
   });
 }
@@ -346,6 +352,7 @@ export function useDeleteBankItem() {
     mutationFn: deleteBankItem,
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["bank"] });
+      void queryClient.invalidateQueries({ queryKey: ["inbox-items"] });
     },
   });
 }
@@ -367,6 +374,7 @@ export function useBulkIgnoreBank() {
     mutationFn: bulkIgnoreBank,
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["bank"] });
+      void queryClient.invalidateQueries({ queryKey: ["inbox-items"] });
     },
   });
 }
@@ -388,6 +396,7 @@ export function useBulkDeleteBank() {
     mutationFn: bulkDeleteBank,
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["bank"] });
+      void queryClient.invalidateQueries({ queryKey: ["inbox-items"] });
     },
   });
 }

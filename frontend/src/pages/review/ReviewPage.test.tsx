@@ -449,8 +449,8 @@ describe("ReviewPage", () => {
   });
 
   test("a no-op Review all says STILL DOWNLOADING when folders are in flight", async () => {
-    // The backend refuses folders that are still receiving files. Saying "the
-    // inbox just cleared" there would be a flat lie — the rows are still on
+    // The backend refuses folders that are still receiving files. Saying
+    // "Nothing left to import" there would be a flat lie — the rows are still on
     // screen, and the user would have no idea why the button did nothing.
     server.use(
       http.get(ITEMS, () =>
@@ -466,15 +466,15 @@ describe("ReviewPage", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: /review all/i }));
     expect(await screen.findByText(/still downloading/i)).toBeInTheDocument();
-    expect(screen.queryByText(/inbox just cleared/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/nothing left to import/i)).not.toBeInTheDocument();
     expect(mockNavigate).not.toHaveBeenCalled();
     // the row it refused is still listed — the message must agree with the list
     expect(screen.getByText("Half Arrived")).toBeInTheDocument();
   });
 
-  test("a no-op Review all with nothing in flight still says the inbox cleared", async () => {
-    // The genuine race the message was written for: the inbox emptied between
-    // the last poll and the click.
+  test("a no-op Review all with nothing in flight says nothing is left to import", async () => {
+    // The inbox emptied between the last poll and the click, or every folder
+    // is already waiting for review — so the sentence names neither.
     server.use(
       http.get(ITEMS, () =>
         HttpResponse.json({
@@ -488,7 +488,7 @@ describe("ReviewPage", () => {
     renderWithProviders(<ReviewPage />);
 
     await userEvent.click(await screen.findByRole("button", { name: /review all/i }));
-    expect(await screen.findByText(/inbox just cleared/i)).toBeInTheDocument();
+    expect(await screen.findByText("Nothing left to import.")).toBeInTheDocument();
   });
 
   /** The refusal the whole source-check exists for: the share is mounted but the
@@ -621,8 +621,8 @@ describe("ReviewPage", () => {
     );
   });
 
-  test("the inbox-cleared message outlives the refetch that empties the list", async () => {
-    // The no-op's own self-unmounting sibling: "the inbox just cleared" fires
+  test("the nothing-left message outlives the refetch that empties the list", async () => {
+    // The no-op's own self-unmounting sibling: "Nothing left to import" fires
     // exactly when the inbox emptied, which is what the start's `onSettled`
     // refetch is about to discover — so inside the section it painted and was
     // destroyed in one round trip, and the empty state only replaces the
@@ -633,12 +633,12 @@ describe("ReviewPage", () => {
     renderWithProviders(<ReviewPage />);
 
     await userEvent.click(await screen.findByRole("button", { name: ROW_REVIEW }));
-    expect(await screen.findByText(/inbox just cleared/i)).toBeInTheDocument();
+    expect(await screen.findByText(/nothing left to import/i)).toBeInTheDocument();
 
     await waitFor(() =>
       expect(screen.queryByText("Lost Tapes")).not.toBeInTheDocument(),
     );
-    expect(screen.getByText(/inbox just cleared/i)).toBeInTheDocument();
+    expect(screen.getByText(/nothing left to import/i)).toBeInTheDocument();
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
@@ -1124,7 +1124,9 @@ describe("ReviewPage", () => {
     server.use(http.get(BANK, () => new HttpResponse(null, { status: 500 })));
     renderWithProviders(<ReviewPage />);
     const section = await screen.findByRole("region", { name: /waiting for review/i });
-    expect(within(section).getByRole("alert")).toBeInTheDocument();
+    expect(within(section).getByRole("alert")).toHaveTextContent(
+      "Couldn’t load what’s waiting for review.",
+    );
     expect(
       within(section).getByRole("button", { name: /retry/i }),
     ).toBeInTheDocument();
@@ -1440,11 +1442,11 @@ describe("ReviewPage", () => {
     ).not.toBeInTheDocument();
     // Only the two eligible rows count toward the bulk actions.
     expect(
-      within(section).getByRole("button", { name: /delete selected \(2\)/i }),
+      within(section).getByRole("button", { name: /remove selected \(2\)/i }),
     ).toBeInTheDocument();
   });
 
-  test("Delete selected confirms, then bulk-deletes the selected ids", async () => {
+  test("Remove selected confirms, then bulk-deletes the selected ids", async () => {
     let body: unknown = null;
     server.use(
       http.get(BANK, () =>
@@ -1466,7 +1468,7 @@ describe("ReviewPage", () => {
     await userEvent.click(within(section).getByRole("checkbox", { name: /select album x/i }));
     await userEvent.click(within(section).getByRole("checkbox", { name: /select album y/i }));
     await userEvent.click(
-      within(section).getByRole("button", { name: /delete selected \(2\)/i }),
+      within(section).getByRole("button", { name: /remove selected \(2\)/i }),
     );
     // AlertDialog confirm step — removing forfeits the banked candidates.
     await userEvent.click(await screen.findByRole("button", { name: /^remove$/i }));
@@ -1511,9 +1513,9 @@ describe("ReviewPage", () => {
   });
 
   test.each([
-    ["any slskd row", "inbox", "The files stay on disk. slskd folders go back to Not imported yet."],
+    ["any slskd row", "inbox", "The files stay on disk. Downloads go back to Not imported yet."],
     ["sweep rows only", "sweep", "The files stay on disk, but the banked candidates are forfeited; a re-sweep will NOT pick these folders up again."],
-  ])("Delete selected with %s says where the folders go", async (_, second, sentence) => {
+  ])("Remove selected with %s says where the folders go", async (_, second, sentence) => {
     server.use(
       http.get(BANK, () =>
         HttpResponse.json({
@@ -1530,7 +1532,52 @@ describe("ReviewPage", () => {
     await userEvent.click(within(section).getByRole("checkbox", { name: /select album x/i }));
     await userEvent.click(within(section).getByRole("checkbox", { name: /select album y/i }));
     await userEvent.click(
-      within(section).getByRole("button", { name: /delete selected \(2\)/i }),
+      within(section).getByRole("button", { name: /remove selected \(2\)/i }),
+    );
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText(sentence)).toBeInTheDocument();
+  });
+
+  // A slskd row holds its folder until it is `done` or `ignored`
+  // (backend/app/bank/store.py:94); only a holding row sends one back.
+  const STAYS = "The files stay on disk.";
+  const GO_BACK_MANY = "The files stay on disk. Downloads go back to Not imported yet.";
+  const SWEEP_MANY =
+    "The files stay on disk, but the banked candidates are forfeited; a re-sweep will NOT pick these folders up again.";
+  const inAllView = (items: ReturnType<typeof bankRow>[]) =>
+    http.get(BANK, () =>
+      HttpResponse.json({ items, total: items.length, total_all: items.length, offset: 0, limit: 48 }),
+    );
+
+  test.each(["done", "ignored"])(
+    "Remove on a slskd row that is %s says only that the files stay",
+    async (status) => {
+      server.use(inAllView([bankRow({ source: "inbox", status })]));
+      renderWithProviders(<ReviewPage />, { route: "/review?bank_status=all" });
+      const section = await screen.findByRole("region", { name: /all imports/i });
+      await userEvent.click(within(section).getByRole("button", { name: /remove album x/i }));
+      const dialog = await screen.findByRole("alertdialog");
+      expect(within(dialog).getByText(STAYS)).toBeInTheDocument();
+    },
+  );
+
+  test.each([
+    ["a held and a done slskd row", ["needs_review", "inbox"], ["done", "inbox"], GO_BACK_MANY],
+    ["a done and an ignored slskd row", ["done", "inbox"], ["ignored", "inbox"], STAYS],
+    ["an ignored slskd row and a sweep row", ["ignored", "inbox"], ["needs_review", "sweep"], SWEEP_MANY],
+  ])("Remove selected with %s", async (_, [s1, src1], [s2, src2], sentence) => {
+    server.use(
+      inAllView([
+        bankRow({ status: s1, source: src1 }),
+        bankRow({ id: "b2", album: "Album Y", status: s2, source: src2 }),
+      ]),
+    );
+    renderWithProviders(<ReviewPage />, { route: "/review?bank_status=all" });
+    const section = await screen.findByRole("region", { name: /all imports/i });
+    await userEvent.click(within(section).getByRole("checkbox", { name: /select album x/i }));
+    await userEvent.click(within(section).getByRole("checkbox", { name: /select album y/i }));
+    await userEvent.click(
+      within(section).getByRole("button", { name: /remove selected \(2\)/i }),
     );
     const dialog = await screen.findByRole("alertdialog");
     expect(within(dialog).getByText(sentence)).toBeInTheDocument();

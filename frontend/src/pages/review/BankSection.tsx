@@ -119,6 +119,36 @@ function triState(
   return false;
 }
 
+/** A slskd row keeps its folder out of "Not imported yet" until it is `done`
+ * or `ignored` (the server's held set, `backend/app/bank/store.py:94`), so
+ * only such a row sends its folder back when removed. Display-only: it picks a
+ * sentence, and the server decides what Remove does. */
+function holdsInboxFolder(row: BankItemSummary): boolean {
+  return (
+    row.source === "inbox" && row.status !== "done" && row.status !== "ignored"
+  );
+}
+
+/** The single-row Remove dialog's sentence. */
+function removeRowSentence(row: BankItemSummary): string {
+  if (holdsInboxFolder(row)) {
+    return "The files stay on disk. The folder goes back to Not imported yet.";
+  }
+  if (row.source === "inbox") return "The files stay on disk.";
+  return "The files stay on disk, but the banked candidates are forfeited; a re-sweep will NOT pick this folder up again.";
+}
+
+/** The Remove selected dialog's sentence, from the selected rows. */
+function removeSelectedSentence(rows: BankItemSummary[]): string {
+  if (rows.some(holdsInboxFolder)) {
+    return "The files stay on disk. Downloads go back to Not imported yet.";
+  }
+  if (rows.every((row) => row.source === "inbox")) {
+    return "The files stay on disk.";
+  }
+  return "The files stay on disk, but the banked candidates are forfeited; a re-sweep will NOT pick these folders up again.";
+}
+
 /**
  * "Waiting for review" — the durable bank backlog (spec §7), paginated from
  * day one. Default filter is "Needs attention" (`view=active`) so resolved
@@ -163,7 +193,7 @@ export function BankSection() {
         <SectionLabel>{heading}</SectionLabel>
         <ErrorState
           variant="inline"
-          message="Couldn’t load the review bank."
+          message="Couldn’t load what’s waiting for review."
           onRetry={() => void listQuery.refetch()}
         />
       </section>
@@ -194,15 +224,15 @@ export function BankSection() {
 
   // "Ignore" only flips needs_review rows server-side, so its label + payload
   // count ONLY those — the wider checkboxes also select failed/done/stale/etc
-  // (which Delete handles), and counting them would over-promise the ignore.
+  // (which Remove handles), and counting them would over-promise the ignore.
   const ignorableSelected = data.items
     .filter((row) => selected.has(row.id) && row.status === "needs_review")
     .map((row) => row.id);
 
-  // Any slskd row in the selection changes what Remove means for it: the
-  // folder is listed again under "Not imported yet" instead of staying away.
-  const removesInbox = data.items.some(
-    (row) => selected.has(row.id) && row.source === "inbox",
+  // What Remove selected means depends on the rows it takes: see
+  // {@link removeSelectedSentence}.
+  const removeSentence = removeSelectedSentence(
+    data.items.filter((row) => selected.has(row.id)),
   );
 
   const allSelected =
@@ -330,7 +360,7 @@ export function BankSection() {
                 size="sm"
                 disabled={visibleSelected.length === 0 || bulkDelete.isPending}
               >
-                Delete selected ({visibleSelected.length})
+                Remove selected ({visibleSelected.length})
               </Button>
             </AlertDialogTrigger>
             <AlertDialogContent>
@@ -340,9 +370,7 @@ export function BankSection() {
                   {visibleSelected.length === 1 ? "" : "s"}?
                 </AlertDialogTitle>
                 <AlertDialogDescription>
-                  {removesInbox
-                    ? "The files stay on disk. slskd folders go back to Not imported yet."
-                    : "The files stay on disk, but the banked candidates are forfeited; a re-sweep will NOT pick these folders up again."}
+                  {removeSentence}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -573,11 +601,7 @@ function BankRow({
             <AlertDialogHeader>
               <AlertDialogTitle>Remove this row?</AlertDialogTitle>
               <AlertDialogDescription>
-                {/* `source` is display-only here: it picks the sentence, and
-                    the server decides what Remove does. */}
-                {row.source === "inbox"
-                  ? "The files stay on disk. The folder goes back to Not imported yet."
-                  : "The files stay on disk, but the banked candidates are forfeited; a re-sweep will NOT pick this folder up again."}
+                {removeRowSentence(row)}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>

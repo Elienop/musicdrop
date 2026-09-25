@@ -996,9 +996,10 @@ class ImportJobRegistry:
 
     def active_status(self) -> ActiveImportStatus:
         """The active-import probe: ``active`` + resume ``job_id`` (invariant:
-        equal), plus the live job's ``origin`` and set-aside count (the FE inbox
-        cue's "N set aside for review"). The count is :meth:`_is_set_aside`, the
-        same predicate ``state()`` uses, so the badge and the page agree.
+        equal), plus the live job's ``origin`` and set-aside count (the nav
+        Review badge, the dashboard's review pointer and the activity row). The
+        count is :meth:`_is_set_aside`, the same predicate ``state()`` uses, so
+        the badge and the page agree.
 
         Drains the active job first so the count tracks the worker's latest
         outcomes; returns the idle ``{active: false}`` shape (with the defaulted

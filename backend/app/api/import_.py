@@ -109,9 +109,10 @@ async def get_active_import(
     ``active`` is ``True`` exactly while the registry's single slot is in
     ``_ACTIVE_PHASES`` (``POST /api/config/apply`` 409s in that case); ``job_id``
     carries the resume target (``None`` when idle). The probe also surfaces the
-    active import's ``origin`` (manual/inbox) and set-aside ``needs_review_count``
-    so the Resume cue can flag an unattended inbox import. All come from one
-    ``active_status()`` call so they can never disagree.
+    active import's ``origin`` (manual/inbox), which names an inbox run in the
+    Resume banner, and set-aside ``needs_review_count``, which the nav Review
+    badge reads. All come from one ``active_status()`` call so they can never
+    disagree.
     """
     return reg.active_status()
 

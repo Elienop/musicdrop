@@ -735,9 +735,10 @@ export interface paths {
          *     ``active`` is ``True`` exactly while the registry's single slot is in
          *     ``_ACTIVE_PHASES`` (``POST /api/config/apply`` 409s in that case); ``job_id``
          *     carries the resume target (``None`` when idle). The probe also surfaces the
-         *     active import's ``origin`` (manual/inbox) and set-aside ``needs_review_count``
-         *     so the Resume cue can flag an unattended inbox import. All come from one
-         *     ``active_status()`` call so they can never disagree.
+         *     active import's ``origin`` (manual/inbox), which names an inbox run in the
+         *     Resume banner, and set-aside ``needs_review_count``, which the nav Review
+         *     badge reads. All come from one ``active_status()`` call so they can never
+         *     disagree.
          */
         get: operations["get_active_import_api_imports_active_get"];
         put?: never;
@@ -1771,8 +1772,9 @@ export interface paths {
          * List Inbox Items
          * @description The inbox backlog — top-level folders awaiting review, source-agnostic.
          *
-         *     Read-only + never 500: a missing/empty inbox (or the lifespan-less test
-         *     client, which has no ``inbox_dir``) yields an empty listing.
+         *     Read-only. A missing/empty inbox (or the lifespan-less test client, which
+         *     has no ``inbox_dir``) yields an empty listing; a bank that cannot be read
+         *     answers 500, as ``GET /api/bank`` does.
          */
         get: operations["list_inbox_items_api_acquisition_inbox_items_get"];
         put?: never;

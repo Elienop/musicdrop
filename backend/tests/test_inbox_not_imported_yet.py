@@ -57,17 +57,18 @@ def _bank(bank_dir: Path, folder: Path, status: BankStatus) -> str:
     return item_id
 
 
-def _surfaces(inbox: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[set[str], int, list[str]]:
-    """What the three surfaces show: the list's names, the badge, Review all's folders."""
+def _surfaces(inbox: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[set[str], int, list[str], int]:
+    """What the three surfaces show: the list's names, the badge, Review all's
+    folders, and how many listed entries Review all reported as still arriving."""
     monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
     fake = FakeImportRunner(parked=[])
     reset_registry(runner=fake)
     client = TestClient(app)
     listed = {item["name"] for item in client.get("/api/acquisition/inbox/items").json()["items"]}
     badge = client.get("/api/acquisition/status").json()["inbox_pending"]
-    client.post("/api/acquisition/review-inbox")
+    in_flight = client.post("/api/acquisition/review-inbox").json()["in_flight"]
     handed = [Path(p).name for p in fake.received_paths or []]
-    return listed, badge, handed
+    return listed, badge, handed, in_flight
 
 
 # Named here, not read from ``store.ACTIVE_STATUSES``: a case derived from the
@@ -83,7 +84,7 @@ def test_a_folder_waiting_for_review_leaves_all_three_surfaces(
     _bank(inbox_bank_dir, _album(inbox, "Held"), status)
     _album(inbox, "Free")  # the control: the surfaces are not simply empty
 
-    assert _surfaces(inbox, monkeypatch) == ({"Free"}, 1, ["Free"])
+    assert _surfaces(inbox, monkeypatch) == ({"Free"}, 1, ["Free"], 0)
 
 
 @pytest.mark.parametrize("status", ["ignored", "done"])
@@ -96,7 +97,7 @@ def test_an_ignored_or_done_row_lets_the_folder_come_back(
     inbox = tmp_path / "inbox"
     _bank(inbox_bank_dir, _album(inbox, "Back"), status)
 
-    assert _surfaces(inbox, monkeypatch) == ({"Back"}, 1, ["Back"])
+    assert _surfaces(inbox, monkeypatch) == ({"Back"}, 1, ["Back"], 0)
 
 
 def test_a_removed_row_lets_the_folder_come_back(
@@ -104,10 +105,10 @@ def test_a_removed_row_lets_the_folder_come_back(
 ) -> None:
     inbox = tmp_path / "inbox"
     item_id = _bank(inbox_bank_dir, _album(inbox, "Back"), "needs_review")
-    assert _surfaces(inbox, monkeypatch) == (set(), 0, [])
+    assert _surfaces(inbox, monkeypatch) == (set(), 0, [], 0)
 
     assert store.delete_item(inbox_bank_dir, item_id)
-    assert _surfaces(inbox, monkeypatch) == ({"Back"}, 1, ["Back"])
+    assert _surfaces(inbox, monkeypatch) == ({"Back"}, 1, ["Back"], 0)
 
 
 def test_a_row_holds_whole_names_only(
@@ -118,7 +119,7 @@ def test_a_row_holds_whole_names_only(
     _album(inbox, "Album 2")
     _album(inbox, "Albu")
 
-    assert _surfaces(inbox, monkeypatch) == ({"Album 2", "Albu"}, 2, ["Albu", "Album 2"])
+    assert _surfaces(inbox, monkeypatch) == ({"Album 2", "Albu"}, 2, ["Albu", "Album 2"], 0)
 
 
 def test_a_row_below_the_entry_holds_the_entry(
@@ -132,7 +133,7 @@ def test_a_row_below_the_entry_holds_the_entry(
     _bank(inbox_bank_dir, disc, "needs_review")
     _album(inbox, "Y")
 
-    assert _surfaces(inbox, monkeypatch) == ({"Y"}, 1, ["Y"])
+    assert _surfaces(inbox, monkeypatch) == ({"Y"}, 1, ["Y"], 0)
 
 
 def test_ignore_is_not_now_and_the_same_webhook_does_not_bring_it_back(
@@ -148,7 +149,7 @@ def test_ignore_is_not_now_and_the_same_webhook_does_not_bring_it_back(
     item_id = _bank(inbox_bank_dir, folder, "needs_review")
     assert store.bulk_ignore(inbox_bank_dir, [item_id]) == 1
 
-    listed, _badge, _handed = _surfaces(inbox, monkeypatch)
+    listed, _badge, _handed, _in_flight = _surfaces(inbox, monkeypatch)
     assert listed == {"Unsure", "Fresh"}
 
     queue = AcquisitionQueue(
@@ -224,3 +225,12 @@ def test_the_store_answers_active_rows_strictly_inside_the_root_by_whole_names(
     _bank(bank_dir, Path("/srv/in/Done"), "done")
 
     assert sorted(store.active_folders_under(bank_dir, root)) == ["/srv/in/A", "/srv/in/B/CD1"]
+
+
+def test_the_store_stops_before_names_that_only_start_with_the_root(tmp_path: Path) -> None:
+    """The high bound: ``/srv/inbox`` and ``/srv/in0`` sort after ``/srv/in/``."""
+    bank_dir = tmp_path / "bank"
+    for folder in ("/srv/in/A", "/srv/inbox/F", "/srv/in0/G", "/srv/in0"):
+        _bank(bank_dir, Path(folder), "needs_review")
+
+    assert store.active_folders_under(bank_dir, Path("/srv/in")) == ["/srv/in/A"]

@@ -3359,7 +3359,7 @@
           "import"
         ],
         "summary": "Get Active Import",
-        "description": "Probe used two ways: the ``/settings`` Apply gate polls ``active``, and\nthe import Start screen reads ``job_id`` to offer \"Resume\" back into a\nrunning import the user navigated away from.\n\n``active`` is ``True`` exactly while the registry's single slot is in\n``_ACTIVE_PHASES`` (``POST /api/config/apply`` 409s in that case); ``job_id``\ncarries the resume target (``None`` when idle). The probe also surfaces the\nactive import's ``origin`` (manual/inbox) and set-aside ``needs_review_count``\nso the Resume cue can flag an unattended inbox import. All come from one\n``active_status()`` call so they can never disagree.",
+        "description": "Probe used two ways: the ``/settings`` Apply gate polls ``active``, and\nthe import Start screen reads ``job_id`` to offer \"Resume\" back into a\nrunning import the user navigated away from.\n\n``active`` is ``True`` exactly while the registry's single slot is in\n``_ACTIVE_PHASES`` (``POST /api/config/apply`` 409s in that case); ``job_id``\ncarries the resume target (``None`` when idle). The probe also surfaces the\nactive import's ``origin`` (manual/inbox), which names an inbox run in the\nResume banner, and set-aside ``needs_review_count``, which the nav Review\nbadge reads. All come from one ``active_status()`` call so they can never\ndisagree.",
         "operationId": "get_active_import_api_imports_active_get",
         "responses": {
           "200": {
@@ -8330,7 +8330,7 @@
           "acquisition"
         ],
         "summary": "List Inbox Items",
-        "description": "The inbox backlog \u2014 top-level folders awaiting review, source-agnostic.\n\nRead-only + never 500: a missing/empty inbox (or the lifespan-less test\nclient, which has no ``inbox_dir``) yields an empty listing.",
+        "description": "The inbox backlog \u2014 top-level folders awaiting review, source-agnostic.\n\nRead-only. A missing/empty inbox (or the lifespan-less test client, which\nhas no ``inbox_dir``) yields an empty listing; a bank that cannot be read\nanswers 500, as ``GET /api/bank`` does.",
         "operationId": "list_inbox_items_api_acquisition_inbox_items_get",
         "responses": {
           "200": {

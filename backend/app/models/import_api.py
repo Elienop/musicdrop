@@ -286,7 +286,7 @@ class ActiveImportStatus(BaseModel):
     # idle ``{active: false}`` fallback type-checks against the same model.
     origin: ImportOrigin = "manual"
     # How many albums the active import has set aside (needs_review +
-    # needs_dup_resolution, minus ``note`` rows) — the FE inbox cue's count.
+    # needs_dup_resolution, minus ``note`` rows) — the nav Review badge's count.
     needs_review_count: int = 0
     # The active sweep's counters (None when the active job is not a sweep, or
     # idle) — the FE sweep banner reads this off the existing probe.

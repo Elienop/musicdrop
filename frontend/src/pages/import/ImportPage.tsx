@@ -253,14 +253,14 @@ export function ImportPage() {
 }
 
 /** Derive the resume-banner copy from the active job's origin. An inbox run
- * banks what it is unsure of, as a sweep does, so it takes the sweep's wording
- * and no count: the banked albums wait on the Review page, not on this run. */
+ * gets no banking clause and no count: Review all and a per-row Review start
+ * one too, and those wait on the run page instead of banking. */
 function resumeBannerText(origin: string | undefined): string {
   if (origin === "sweep") {
     return "A sweep is running; uncertain albums are being banked for review.";
   }
   if (origin === "inbox") {
-    return "An inbox import is running; unsure albums are being banked for review.";
+    return "An inbox import is running.";
   }
   return "An import is already running.";
 }
@@ -288,7 +288,7 @@ function ImportEntry() {
   // banner never renders a link to a null id.
   const activeJobId = active.data?.job_id ?? null;
   const importActive = (active.data?.active ?? false) && activeJobId !== null;
-  // An inbox-origin import is the unattended slskd path: name it as such.
+  // An inbox-origin import names the slskd inbox, attended or not.
   const origin = active.data?.origin;
 
   const trimmed = path.trim();

@@ -371,7 +371,7 @@ describe("ImportPage — entry", () => {
     ).toBeDisabled();
   });
 
-  test("an inbox run's banner takes the sweep's wording and no count", async () => {
+  test("an inbox run's banner claims no banking and no count", async () => {
     server.use(
       http.get(ACTIVE_URL, () =>
         HttpResponse.json({
@@ -385,9 +385,9 @@ describe("ImportPage — entry", () => {
     renderAt("/import");
 
     expect(
-      await screen.findByText(
-        "An inbox import is running; unsure albums are being banked for review.",
-      ),
+      // Review all and a per-row Review also start inbox runs, and those
+      // wait on the run page instead of banking.
+      await screen.findByText("An inbox import is running."),
     ).toBeInTheDocument();
     expect(screen.queryByText(/set aside/i)).not.toBeInTheDocument();
   });

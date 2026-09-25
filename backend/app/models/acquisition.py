@@ -45,8 +45,9 @@ class AcquisitionQueueStatus(BaseModel):
     set_aside: int
     failed: int
     error: str | None
-    # How many folders are sitting in the inbox right now (a cheap scandir count,
-    # NOT the lifetime set_aside total) — feeds the nav Review badge.
+    # How many entries "Not imported yet" lists right now (NOT the lifetime
+    # set_aside total). No client reads it yet: the nav Review badge reads
+    # ``needs_review_count`` from the active-import probe.
     inbox_pending: int = 0
 
 

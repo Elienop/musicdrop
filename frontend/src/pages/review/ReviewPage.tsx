@@ -227,7 +227,7 @@ export function ReviewPage() {
 
       {/* The no-op result, at PAGE level and immediately after the section, so
           it keeps the position it had inside it and survives the section's own
-          unmount. Its "Nothing left to import; the inbox just cleared." branch
+          unmount. Its "Nothing left to import." branch
           fires exactly when the inbox emptied, which is what the start's
           `onSettled` refetch is about to discover — so nested it painted and
           was destroyed inside one round trip. The empty state only replaces the
@@ -387,7 +387,7 @@ function noOpInFlightMessage(skipped: number | null): string {
       "still receiving files. They'll be importable once they finish."
     );
   }
-  return "Nothing left to import; the inbox just cleared.";
+  return "Nothing left to import.";
 }
 
 /** Row subtitle: the folder still receiving files says so FIRST ("Review

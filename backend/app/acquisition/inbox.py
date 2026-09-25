@@ -13,8 +13,9 @@ outside is rejected too — the resolved target is no longer under the inbox.
 
 ``_not_imported_yet`` is the ONE "Not imported yet" rule (a top-level
 non-hidden, non-symlinked dir holding audio that no row in "Waiting for review"
-holds), shared by the nav badge (``count_pending``), the Review listing
-(``list_inbox``) and Review all (``settled_folders``).
+holds), shared by the count (``count_pending``, the status route's
+``inbox_pending``), the Review listing (``list_inbox``) and Review all
+(``settled_folders``).
 """
 
 from __future__ import annotations
@@ -152,7 +153,12 @@ def bank_held_names(inbox_dir: Path, bank_dir: Path) -> frozenset[str]:
     ONE bank read for the whole inbox, not one per entry. A row holds the
     top-level entry it sits at or below: the drain banks the album folder,
     which can be deeper than the entry (``inbox/X/CD1`` holds ``inbox/X``).
-    Both sides are resolved paths, so whole names are enough.
+
+    Matched by spelling, whole names only. ``inbox_dir`` is resolved, and so is
+    every folder the inbox routes and the drain hand over (``contain``). A row
+    a sweep banked keeps the spelling that sweep walked: beets' ``normpath``
+    does not resolve links, so a folder banked through a symlink or a bind
+    mount of the inbox does not hide its entry.
     """
     prefix = os.path.join(inbox_dir, "")
     names = (
@@ -194,7 +200,7 @@ def _not_imported_entries(inbox_dir: Path, held: frozenset[str]) -> list[os.DirE
 
 
 def count_pending(inbox_dir: Path, *, held: frozenset[str]) -> int:
-    """How many entries "Not imported yet" lists: the nav badge's count."""
+    """How many entries "Not imported yet" lists: the status route's ``inbox_pending``."""
     return len(_not_imported_entries(inbox_dir, held))
 
 

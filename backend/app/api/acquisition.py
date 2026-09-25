@@ -345,8 +345,9 @@ async def review_inbox(
 async def list_inbox_items(request: Request) -> InboxListing:
     """The inbox backlog — top-level folders awaiting review, source-agnostic.
 
-    Read-only + never 500: a missing/empty inbox (or the lifespan-less test
-    client, which has no ``inbox_dir``) yields an empty listing.
+    Read-only. A missing/empty inbox (or the lifespan-less test client, which
+    has no ``inbox_dir``) yields an empty listing; a bank that cannot be read
+    answers 500, as ``GET /api/bank`` does.
     """
     inbox_dir = getattr(request.app.state, "inbox_dir", None)
     if inbox_dir is None:

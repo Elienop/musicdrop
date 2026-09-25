@@ -1742,6 +1742,31 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   the row. A fourth recovery value with a true headline is **a new mechanism**, recorded here,
   not built.
 
+- **A per-row Review can import a folder "Waiting for review" holds (2026-09-25, S3 seats).**
+  `POST /acquisition/inbox/items/import` (`_start_inbox_item`, `app/api/acquisition.py`) never
+  asks `bank_held_names`, so a list row that went stale before its album was banked still
+  starts an import of that folder; the next poll hides the row. The album is then decided in two
+  places. **A new mechanism**, not built: refuse a held name at start.
+- **`inbox_pending` has no reader, and every status poll pays for it (2026-09-25, S3 code
+  seat).** Nothing in the frontend reads it (the nav Review badge reads `needs_review_count`),
+  yet `GET /acquisition/status` makes a bank read and an inbox scan for it on every poll. Drop
+  the field (a contract change) or give it a reader; not built.
+- **`inbox_bank_dir` is opt-in, so a new inbox-route test can open the dev bank (2026-09-25,
+  S3 code seat).** Without the fixture (`backend/tests/conftest.py`), `get_bank_dir()` is the
+  cwd-relative default and a test opens `backend/data/beets/bank/bank.db`. A suite-level floor
+  like the root conftest's `SUITE_DATA_DIR` (set `MUSICDROP_BANK_DIR` before `app.config` is
+  imported) would close it for every test; **a new mechanism**, not built.
+- **A broken bank blanks the drain's live status (2026-09-25, S3 code seat).** The status
+  route now reads the bank, so an unreadable bank answers 500, and `useAcquisitionStatus`
+  (`frontend/src/api/useAcquisitionStatus.ts`, the `!response.ok` arm) turns that into IDLE:
+  a running drain shows as idle. The Review page already shows the bank's own error. Not built.
+- **No toast after a single Ignore (2026-09-25, S3 UI seat).** The bulk Ignore says what
+  happened; a per-row Ignore just removes the row. Not built.
+- **The activity panel hides an attended Review all run (2026-09-25, S3 UI seat).**
+  `importRow` (`frontend/src/api/useActivity.ts`) drops every `origin="inbox"` import because
+  the acquisition row stands for the drain, but Review all and per-row Review also start
+  `origin="inbox"` runs while the drain is idle, so nothing shows them. Not built.
+
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth
   slice 2's Sonar violations).**~~ — **FIXED in #202, 2026-08-30.** The owner's standing

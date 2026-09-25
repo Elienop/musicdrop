@@ -5,7 +5,11 @@
  * The 409 paths matter most: the backend's InvalidTransitionError arrives as
  * {detail: string} and must surface as BankConflictError with that message.
  */
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  QueryClient,
+  QueryClientProvider,
+  type UseMutationResult,
+} from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import type { ReactNode } from "react";
@@ -18,6 +22,7 @@ import {
   useBankDuplicates,
   useBankItem,
   useBankList,
+  useBulkDeleteBank,
   useBulkIgnoreBank,
   useDeleteBankItem,
   useIgnoreBankItem,
@@ -30,6 +35,7 @@ const ITEM = `${O}/api/bank/:itemId`;
 const DECISION = `${O}/api/bank/:itemId/decision`;
 const DUPLICATES = `${O}/api/bank/:itemId/duplicates`;
 const BULK = `${O}/api/bank/bulk-ignore`;
+const BULK_DELETE = `${O}/api/bank/bulk-delete`;
 
 function wrapper() {
   const queryClient = new QueryClient({
@@ -470,6 +476,44 @@ describe("useBankDuplicates", () => {
       wrapper: wrapper(),
     });
     expect(result.current.fetchStatus).toBe("idle");
+  });
+});
+
+describe("Ignore and Remove refresh Not imported yet", () => {
+  // An ignored or removed row stops holding its folder, so the inbox list must
+  // refetch now — not at its next 30 s poll, with the album in neither list.
+  /** One mutation and its variables, bound, so the table rows share a type. */
+  const bound = <V,>(m: UseMutationResult<unknown, Error, V>, variables: V) => ({
+    fire: () => m.mutate(variables),
+    isSuccess: m.isSuccess,
+  });
+  test.each([
+    ["useBankDecision (ignore)", () => bound(useBankDecision("b1"), { action: "ignore" })],
+    ["useIgnoreBankItem", () => bound(useIgnoreBankItem(), "b1")],
+    ["useDeleteBankItem", () => bound(useDeleteBankItem(), "b1")],
+    ["useBulkIgnoreBank", () => bound(useBulkIgnoreBank(), ["b1"])],
+    ["useBulkDeleteBank", () => bound(useBulkDeleteBank(), ["b1"])],
+  ])("%s invalidates the inbox list", async (_, hook) => {
+    server.use(
+      http.post(DECISION, () => HttpResponse.json({ ...summary, status: "ignored" })),
+      http.delete(ITEM, () => new HttpResponse(null, { status: 204 })),
+      http.post(BULK, () => HttpResponse.json({ ignored: 1 })),
+      http.post(BULK_DELETE, () => HttpResponse.json({ deleted: 1 })),
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(["inbox-items"], { items: [] });
+    const { result } = renderHook(hook, {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+    result.current.fire();
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    await waitFor(() =>
+      expect(queryClient.getQueryState(["inbox-items"])?.isInvalidated).toBe(true),
+    );
   });
 });
 
