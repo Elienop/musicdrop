@@ -16,6 +16,7 @@ import errno
 import logging
 import os
 import shutil
+import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -2200,3 +2201,242 @@ def test_the_operator_log_escapes_a_forged_folder_name(
         message = record.getMessage()
         assert "\n" not in message, message
         assert "session gate DISABLED" in message
+
+
+# ----- a re-bank landing just before a post-claim write -----
+#
+# slskd's drain re-banks a folder whenever a download lands in it (decisions
+# #76), including while that folder's row is being applied. Every write after
+# the claim must then refuse, leaving the fresh ``needs_review`` row as the
+# re-bank wrote it: a blind ``done`` is a row with no decision that every read
+# refuses, and a blind ``stale``/``failed`` throws the new download's decision
+# away. One case per write site, each reached its own way.
+
+_RaceCase = tuple[str, Path, ImportJobRegistry, Callable[[], LibraryHandle]]
+_RaceSetup = Callable[[Path, pytest.MonkeyPatch, Path], _RaceCase]
+
+
+def _fingerprint_raises(monkeypatch: pytest.MonkeyPatch, exc: OSError) -> None:
+    import app.bank.apply_runner as apply_mod
+
+    def raising(path: Path) -> str:
+        raise exc
+
+    monkeypatch.setattr(apply_mod, "folder_fingerprint", raising)
+
+
+def _start_raises(reg: ImportJobRegistry, exc: Exception) -> None:
+    def raising_start(
+        source: str | list[str],
+        *,
+        options: ImportOptions | None = None,
+        origin: ImportOrigin = "manual",
+        directive: BankApplyDirective | None = None,
+    ) -> str:
+        raise exc
+
+    reg.start = raising_start  # type: ignore[method-assign]
+
+
+def _race_folder_gone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bank: Path) -> _RaceCase:
+    ghost = tmp_path / "swept" / "Ghost"
+    item = store.create_item(
+        bank, folder=str(ghost), source="sweep", reason="no_match", fingerprint="f" * 64
+    )
+    store.decide_item(bank, item.id, BankDecision(action="asis"))
+    return item.id, ghost, ImportJobRegistry(runner=FakeImportRunner()), _no_library
+
+
+def _race_folder_absent_errno(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bank: Path
+) -> _RaceCase:
+    folder = _folder(tmp_path)
+    item_id = _seed_queued(bank, folder)
+    _fingerprint_raises(monkeypatch, NotADirectoryError(errno.ENOTDIR, "Not a directory"))
+    return item_id, folder, ImportJobRegistry(runner=FakeImportRunner()), _no_library
+
+
+def _race_folder_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bank: Path
+) -> _RaceCase:
+    folder = _folder(tmp_path)
+    item_id = _seed_queued(bank, folder)
+    _fingerprint_raises(monkeypatch, PermissionError(errno.EACCES, "Permission denied"))
+    return item_id, folder, ImportJobRegistry(runner=FakeImportRunner()), _no_library
+
+
+def _race_folder_changed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bank: Path) -> _RaceCase:
+    folder = _folder(tmp_path)
+    item_id = _seed_queued(bank, folder)
+    (folder / "02 New.mp3").write_bytes(b"y" * 32)
+    return item_id, folder, ImportJobRegistry(runner=FakeImportRunner()), _no_library
+
+
+def _race_skip_new(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bank: Path) -> _RaceCase:
+    handle, ids = _library(tmp_path, [("A", "B")])
+    folder = _folder(tmp_path)
+    item_id = _seed_dup_row(
+        bank, folder, DuplicateAction.skip_new, prompt=_dup_prompt([_existing(ids[0])])
+    )
+    return item_id, folder, ImportJobRegistry(runner=FakeImportRunner()), lambda: handle
+
+
+def _race_start_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bank: Path
+) -> _RaceCase:
+    from app.import_jobs.runner import SourcePathMissingError
+
+    folder = _folder(tmp_path)
+    item_id = _seed_queued(bank, folder)
+    reg = ImportJobRegistry(runner=FakeImportRunner())
+    _start_raises(reg, SourcePathMissingError(_UNREADABLE, unreadable=True))
+    return item_id, folder, reg, _no_library
+
+
+def _race_start_gone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bank: Path) -> _RaceCase:
+    from app.import_jobs.runner import SourcePathMissingError
+
+    folder = _folder(tmp_path)
+    item_id = _seed_queued(bank, folder)
+    reg = ImportJobRegistry(runner=FakeImportRunner())
+    _start_raises(reg, SourcePathMissingError("That folder isn’t there any more."))
+    return item_id, folder, reg, _no_library
+
+
+def _race_start_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bank: Path) -> _RaceCase:
+    from app.import_jobs.runner import ImportSourceRefusedError
+
+    folder = _folder(tmp_path)
+    item_id = _seed_queued(bank, folder)
+    reg = ImportJobRegistry(runner=FakeImportRunner())
+    _start_raises(reg, ImportSourceRefusedError("That folder is your library. Pick another."))
+    return item_id, folder, reg, _no_library
+
+
+def _race_result_lost(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bank: Path) -> _RaceCase:
+    folder = _folder(tmp_path)
+    item_id = _seed_queued(bank, folder)
+    reg = ImportJobRegistry(runner=FakeImportRunner())
+
+    def slot_replaced(job_id: str) -> "ImportJobState":
+        raise KeyError(job_id)
+
+    reg.state = slot_replaced  # type: ignore[method-assign]
+    return item_id, folder, reg, _no_library
+
+
+def _race_refreshed_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bank: Path
+) -> _RaceCase:
+    # A stale-consent refusal publishes the collision it saw, and the runner
+    # writes it onto the row before failing it.
+    handle, ids = _library(tmp_path, [("A", "B"), ("A", "B")])
+    fake = FakeImportRunner(
+        applied=[
+            _outcome(AlbumOutcomeStatus.needs_dup_resolution).model_copy(
+                update={"note": _STALE_CONSENT}
+            )
+        ],
+        published_duplicates=[_dup_prompt([_existing(ids[0]), _existing(ids[1])])],
+    )
+    folder = _folder(tmp_path)
+    item_id = _seed_dup_row(
+        bank, folder, DuplicateAction.replace, prompt=_dup_prompt([_existing(ids[0])])
+    )
+    return item_id, folder, ImportJobRegistry(runner=fake), lambda: handle
+
+
+def _race_final(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bank: Path) -> _RaceCase:
+    folder = _folder(tmp_path)
+    item_id = _seed_queued(bank, folder)
+    fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.applied, album_id=9)])
+    return item_id, folder, ImportJobRegistry(runner=fake), _no_library
+
+
+@pytest.mark.parametrize(
+    ("setup", "status", "error_part"),
+    [
+        pytest.param(_race_folder_gone, "stale", "no longer exists", id="folder-gone"),
+        pytest.param(_race_folder_absent_errno, "stale", "no longer exists", id="folder-enotdir"),
+        pytest.param(_race_folder_unreadable, "failed", _UNREADABLE, id="folder-unreadable"),
+        pytest.param(_race_folder_changed, "stale", "changed", id="folder-changed"),
+        pytest.param(_race_skip_new, "done", None, id="skip-new"),
+        pytest.param(_race_start_unreadable, "failed", _UNREADABLE, id="start-unreadable"),
+        pytest.param(_race_start_gone, "stale", "no longer exists", id="start-gone"),
+        pytest.param(_race_start_refused, "failed", "Pick another", id="start-refused"),
+        pytest.param(_race_result_lost, "failed", "could not be confirmed", id="result-lost"),
+        pytest.param(_race_refreshed_prompt, "refresh_duplicate", None, id="refreshed-prompt"),
+        pytest.param(_race_final, "done", None, id="final"),
+    ],
+)
+def test_a_folder_rebanked_just_before_a_post_claim_write_keeps_its_fresh_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    setup: _RaceSetup,
+    status: str,
+    error_part: str | None,
+) -> None:
+    bank = _bank(tmp_path)
+    item_id, folder, reg, library = setup(tmp_path, monkeypatch, bank)
+
+    real_set_status = store.set_status
+    real_refresh_duplicate = store.refresh_duplicate
+    attempted: list[tuple[str, object]] = []
+    written = threading.Event()
+
+    def rebank(write: str, error: object) -> None:
+        attempted.append((write, error))
+        store.upsert_by_folder(
+            bank, folder=str(folder), source="inbox", reason="no_match", fingerprint="0" * 64
+        )
+
+    def rebank_then_write(
+        bank_dir: Path, row_id: str, row_status: str, **kwargs: object
+    ) -> BankItem | None:
+        if row_status not in ("done", "failed", "stale") or attempted:
+            return real_set_status(bank_dir, row_id, row_status, **kwargs)  # type: ignore[arg-type]
+        rebank(row_status, kwargs.get("error"))
+        try:
+            return real_set_status(bank_dir, row_id, row_status, **kwargs)  # type: ignore[arg-type]
+        finally:
+            written.set()
+
+    def rebank_then_refresh(
+        bank_dir: Path, row_id: str, prompt: DuplicatePrompt, **kwargs: object
+    ) -> BankItem | None:
+        if attempted:
+            return real_refresh_duplicate(bank_dir, row_id, prompt, **kwargs)  # type: ignore[arg-type]
+        rebank("refresh_duplicate", None)
+        try:
+            return real_refresh_duplicate(bank_dir, row_id, prompt, **kwargs)  # type: ignore[arg-type]
+        finally:
+            written.set()
+
+    monkeypatch.setattr(store, "set_status", rebank_then_write)
+    monkeypatch.setattr(store, "refresh_duplicate", rebank_then_refresh)
+
+    runner = _make_runner(bank, reg, library)
+    runner.start()
+    try:
+        assert written.wait(timeout=5.0), "the apply never reached a write after its claim"
+    finally:
+        runner.stop()
+
+    # The case reached the write it names, not another one.
+    assert len(attempted) == 1
+    attempted_status, attempted_error = attempted[0]
+    assert attempted_status == status
+    if error_part is None:
+        assert attempted_error is None
+    else:
+        assert isinstance(attempted_error, str)
+        assert error_part in attempted_error
+    row = store.get_item(bank, item_id)  # a blind ``done`` makes this raise
+    assert row is not None
+    assert (row.status, row.decided, row.source, row.error, row.duplicate) == (
+        "needs_review",
+        None,
+        "inbox",
+        None,
+        None,
+    )

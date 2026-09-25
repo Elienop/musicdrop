@@ -1953,8 +1953,8 @@ class WebImportSession(ImportSession):
     def _banks(self) -> bool:
         """Whether this run banks what it sets aside: unattended, with a bank.
 
-        Not ``sweep``: slskd's automatic import banks every album it skips
-        exactly as a sweep does (decisions #76). An attended run parks instead,
+        Not ``sweep``: slskd's automatic import banks every album it cannot
+        finish exactly as a sweep does (decisions #76). An attended run parks instead,
         and a bank apply answers from its row before any banking gate.
         """
         return self.unattended and self._bank_dir is not None

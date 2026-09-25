@@ -694,7 +694,13 @@ def set_status(
         return item
 
 
-def refresh_duplicate(bank_dir: Path, item_id: str, prompt: DuplicatePrompt) -> BankItem | None:
+def refresh_duplicate(
+    bank_dir: Path,
+    item_id: str,
+    prompt: DuplicatePrompt,
+    *,
+    expected: BankStatus | None = None,
+) -> BankItem | None:
     """Replace the row's stored collision with the one an apply just saw.
 
     The one writer that REPLACES a prompt rather than clearing it
@@ -705,12 +711,16 @@ def refresh_duplicate(bank_dir: Path, item_id: str, prompt: DuplicatePrompt) -> 
 
     Status is not touched: the caller flips it (``failed``) immediately after,
     and an ``applying`` row is neither decidable nor rescannable, so no second
-    writer sees the half-updated shape.
+    writer sees the half-updated shape. A re-bank can still reset it, so
+    ``expected`` is ``set_status``'s compare-and-set: a row whose status differs
+    is left alone and None returned.
     """
     with _LOCK:
         conn = _conn(bank_dir)
         item = _get(conn, item_id)
         if item is None:
+            return None
+        if expected is not None and item.status != expected:
             return None
         item.duplicate = prompt
         _put(conn, item)
@@ -784,8 +794,8 @@ def upsert_by_folder(
 ) -> BankItem:
     """Bank a folder, deduplicating on (folder): same fingerprint refreshes
     ``banked_at``; a changed fingerprint replaces the payload and resets the
-    row to ``needs_review`` (the spec's dedupe rule — a re-banked folder is a
-    fresh decision).
+    row to ``needs_review`` with nothing left from a previous apply (the spec's
+    dedupe rule — a re-banked folder is a fresh decision).
 
     Rows from before the dedupe can share a folder; the latest banked one owns
     it (``banked_at``, then id), the order the old store's boot used."""
@@ -828,6 +838,11 @@ def upsert_by_folder(
                     "decided": None,
                     "error": None,
                     "error_recovery": "decide_again",
+                    # The previous apply's outcome, cleared like its status:
+                    # ``set_status`` reads None as "leave it", so a later
+                    # skip_new ``done`` would otherwise report album 42 as
+                    # imported although this decision imported nothing.
+                    "album_id": None,
                     "banked_at": _now(),
                     "decided_at": None,
                     "resolved_at": None,

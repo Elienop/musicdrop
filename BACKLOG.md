@@ -169,8 +169,9 @@ entry carries a dated correction block where the pass changed it._
      `incremental` on, with `incremental_skip_later` so a skipped album is offered again; a
      sweep forces `incremental_skip_later` off (a user's `yes` made every sweep re-bank the
      same folders). The way past the history is beets' own `-I` — `ImportOptions.incremental:
-     false` (the wire admits `false` and `null`; `true` is a 422) — sent by **Import them again** and always by the
-     Bank's Review now, slskd's drain and both inbox Review buttons (branch 2, S2). `copy`, `link` and `reflink` configs are left to the user (`decisions`
+     false` (the wire admits `false` and `null`; `true` is a 422) — sent by **Import them
+     again** and always by the Bank's Review now, slskd's drain and both inbox Review buttons
+     (branch 2, S2). `copy`, `link` and `reflink` configs are left to the user (`decisions`
      #53: the setting writes `hardlink`), though `link: yes` shares the same-file hazard below
      (measured: `util.samefile` follows the symlink).
      Recorded by the 2026-09-18 review seats:
@@ -1766,6 +1767,25 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `importRow` (`frontend/src/api/useActivity.ts`) drops every `origin="inbox"` import because
   the acquisition row stands for the drain, but Review all and per-row Review also start
   `origin="inbox"` runs while the drain is idle, so nothing shows them. Not built.
+- **A decision can land on a list the operator never saw (2026-09-26, S2 security seat).** A
+  decision is tied to the row id only. If the drain re-banks the folder while the review dialog
+  is open (a late track), the operator's `candidate_index` resolves against the NEW candidate
+  list: they pick the second release shown, the apply pins the second of another list. The
+  row's `fingerprint` is a ready-made version token to send with the decision; beets has no
+  equivalent (its prompt keeps the task in memory). **A new mechanism**, not built.
+- **Under `group_albums: yes` a skip can lack its own row (2026-09-26, S2 seats).** beets'
+  default is `no`. Grouping builds tasks by tag, not by folder
+  (`beets/importer/stages.py:178-182`; `task.is_grouped` is beets' own marker), so a one-track
+  group's "folder" is the file (its apply job fails), and two groups in one folder share one
+  bank row. Not built.
+- **A hand-made unattended import outside slskd's folder banks `source="inbox"` rows
+  (2026-09-26, S2 seats).** `POST /api/import {unattended: true}` on any folder banks what it
+  skips as `inbox`, and those rows' Remove sentence then says the folder goes back to Not
+  imported yet, which is slskd's list. API-only; the UI never sends it. Not built.
+- **An apply answers every album under its folder with one decision (2026-09-26, S2 seats).**
+  `_directive_choice` (`app/beets/import_session.py`) answers each album the run finds with the
+  row's one banked decision. slskd writes one level, so its downloads cannot hold a nested
+  album; a sweep or Add from folder on a folder holding one can. Not built.
 
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth

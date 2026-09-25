@@ -509,6 +509,39 @@ def test_a_bank_apply_with_a_bank_banks_nothing(
     assert store.count_items(bank_dir) == 0
 
 
+def test_a_bank_apply_that_meets_a_duplicate_banks_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The duplicate hook's twin of the pin above: an apply row whose album turns
+    # out to be in the library is answered from its directive (SKIP, the runner
+    # fails the row), never re-banked over the row being applied.
+    match = _build_match(BeetsRec.strong)
+    bank_dir = tmp_path / "bank"
+    session = _inbox_session(ImportBridge(), bank_dir)
+    session._directive = BankApplyDirective(action="apply")
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    session.lib = lib
+    existing_album = lib.add_album(
+        [
+            Item(
+                albumartist="Radiohead",
+                album="OK Computer",
+                title="Airbag",
+                track=1,
+                length=234.0,
+                path=os.fsencode(str(tmp_path / "music" / "ok.mp3")),
+            )
+        ]
+    )
+    folder = _album_folder(tmp_path)
+    task = _make_task(match, monkeypatch, BeetsRec.strong, paths=[os.fsencode(str(folder))])
+    task.set_choice(match)
+    task.md_album_index = 0  # type: ignore[attr-defined]  # the index choose_match stashed
+
+    assert session.get_duplicate_action(task, [existing_album]) is BeetsDuplicateAction.SKIP
+    assert store.count_items(bank_dir) == 0
+
+
 def test_sweep_bank_write_failure_propagates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
