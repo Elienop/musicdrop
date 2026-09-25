@@ -20,6 +20,7 @@ from pathlib import Path
 
 from app.beets.import_mapping import embedded_art
 from app.beets.import_session import ImportBridge
+from app.config import Settings
 from app.events.broker import EventBroker
 from app.import_jobs.runner import BeetsImportRunner, ImportRunner
 from app.models.bank import BankApplyDirective
@@ -180,6 +181,8 @@ class ImportJobRegistry:
         self._trash_origins_dir: Path | None = None
         self._bank_dir: Path | None = None
         self._playlists_dir: Path | None = None
+        self._settings: Settings | None = None
+        self._beets_dir: Path | None = None
         self._refusal: str | None = None
         self._job: ImportJob | None = None
         self._lock = threading.Lock()
@@ -211,6 +214,9 @@ class ImportJobRegistry:
         playlists_dir: Path | None = None,
         trash_origins_dir: Path | None = None,
         refusal: str | None = None,
+        *,
+        settings: Settings | None,
+        beets_dir: Path | None,
     ) -> None:
         """Provide the beets Library + Trash dir + bank dir + playlists dir the
         production runner builds from (bank_dir feeds sweep-mode sessions;
@@ -221,12 +227,19 @@ class ImportJobRegistry:
         wired from the same resolve as ``trash_dir`` and the two are used as a
         pair. ``refusal`` is Apply's backstop sentence: measured, an import
         started after that 422 was accepted and landed its files in the beets
-        data dir, the root the Apply had just refused."""
+        data dir, the root the Apply had just refused.
+
+        ``settings`` and ``beets_dir`` are what an import start lists MusicDrop's
+        own folders from, to refuse a source that is or holds one. Required, so a
+        caller cannot turn that refusal off by leaving them out; ``None`` is for
+        a test that means to."""
         self._lib = lib
         self._trash_dir = trash_dir
         self._trash_origins_dir = trash_origins_dir
         self._bank_dir = bank_dir
         self._playlists_dir = playlists_dir
+        self._settings = settings
+        self._beets_dir = beets_dir
         self._refusal = refusal
 
     @property
@@ -247,6 +260,8 @@ class ImportJobRegistry:
             self._trash_origins_dir,
             self._bank_dir,
             self._playlists_dir,
+            settings=self._settings,
+            beets_dir=self._beets_dir,
         )
 
     # ----- lifecycle -----

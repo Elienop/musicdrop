@@ -1074,6 +1074,8 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
                 playlists_dir=get_playlists_dir(),
                 trash_origins_dir=None,
                 refusal=f"Apply {did}. {exc}",
+                settings=settings,
+                beets_dir=new.beets_dir,
             )
             if failure is not None:
                 raise HTTPException(
@@ -1093,6 +1095,8 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
             bank_dir=get_bank_dir(),
             playlists_dir=get_playlists_dir(),
             trash_origins_dir=origins_dir,
+            settings=settings,
+            beets_dir=new.beets_dir,
         )
         if failure is not None:
             raise HTTPException(

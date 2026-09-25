@@ -39,6 +39,7 @@ from app.import_jobs.gates import import_gate_clear
 from app.import_jobs.registry import ImportJobRegistry
 from app.import_jobs.runner import (
     ABSENT_ERRNOS,
+    ImportSourceRefusedError,
     LibraryRootUnavailableError,
     SourcePathMissingError,
     unreadable_reason,
@@ -486,6 +487,20 @@ class BankApplyRunner:
                 )
             else:
                 bank_store.set_status(self._bank_dir, item.id, "stale", error=_STALE_GONE_ERROR)
+            return
+        except ImportSourceRefusedError as exc:
+            # The row's folder is or holds the library or one of ours, or is
+            # slskd's whole folder (a task collapsed onto it), where one banked
+            # decision would answer for every album there. Its own arm, not the
+            # catch-all: deciding again alone fails identically, so the row asks
+            # for the folder to change first. The sentence carries no path.
+            bank_store.set_status(
+                self._bank_dir,
+                item.id,
+                "failed",
+                error=str(exc),
+                error_recovery="fix_folder",
+            )
             return
         try:
             state = self._wait_for_result(job_id)

@@ -29,18 +29,18 @@ import contextlib
 import errno
 import os
 import stat
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Final, NamedTuple
+from typing import Any, Final, Literal, NamedTuple
 
 import beets
 import confuse
 
 from app.beets.library import LibraryHandle, _music_dir, require_library_present
-from app.beets.protected import ProtectedTrees, protected_trees
+from app.beets.protected import ProtectedTrees, protected_entries, protected_trees
 from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
-from app.config import Settings, app_owned_dirs, export_dir
+from app.config import INBOX_STORE, Settings, app_owned_dirs, export_dir
 from app.fsutil import BELOW_FLAGS, ROOT_FLAGS, bytes_at_most, open_root
 from app.wire import display_path
 
@@ -49,6 +49,9 @@ __all__ = [
     "LIBRARY_SETTING",
     "MUSIC_SETTING",
     "ORIGINS_SETTING",
+    "SOURCE_HOLDS_APP_DATA",
+    "SOURCE_IS_THE_INBOX",
+    "SOURCE_IS_THE_LIBRARY",
     "TRASH_SETTING",
     "StoreLayoutError",
     "check_store_layout",
@@ -56,6 +59,7 @@ __all__ = [
     "checked_reachable_store_dirs",
     "checked_store_dirs",
     "effective_config_paths",
+    "import_source_refusal",
     "layout_check_for_config",
     "lib_music_and_library",
     "yaml_error_at",
@@ -266,6 +270,125 @@ def _relation_of(container: tuple[_Rung, ...], inner: tuple[_Rung, ...]) -> str 
     if _same_rung(container[0], inner[0]):
         return "is"
     return "contains" if any(_same_rung(container[0], rung) for rung in inner[1:]) else None
+
+
+#: The three answers an import start refuses a source with, in the order they
+#: are asked. No path in any: the operator typed or picked the folder.
+SOURCE_IS_THE_LIBRARY: Final = "That folder is your library or holds it. Pick another."
+SOURCE_HOLDS_APP_DATA: Final = "That folder holds MusicDrop’s own data. Pick another."
+SOURCE_IS_THE_INBOX: Final = "That’s slskd’s whole folder. Pick an album inside it."
+
+#: How the import refusal reads each :func:`protected_entries` row. ``database``
+#: is only ever "is or holds": ``library.db``'s folder may be the library root,
+#: or a wide folder such as ``/media`` (module docstring), so "inside" it proves
+#: nothing. ``inbox`` is only ever "is": albums inside it are what it is for, and
+#: a folder holding it holds nothing of ours on that account.
+_SourceRow = tuple[Literal["library", "database", "inbox", "app"], tuple[_Rung, ...]]
+
+
+def _source_kind(setting: str) -> Literal["library", "database", "inbox", "app"]:
+    """A row's kind, off the setting :func:`protected_entries` spells it with."""
+    if setting == MUSIC_SETTING:
+        return "library"
+    if setting == LIBRARY_SETTING:
+        return "database"
+    return "inbox" if setting == INBOX_STORE.setting else "app"
+
+
+def _resolved_chain(path: Path) -> tuple[_Rung, ...] | None:
+    """:func:`_chain` of where ``path`` resolves, so a rung is a REAL ancestor.
+
+    The unresolved spelling is kept when it will not resolve (a symlink loop),
+    and its rungs are then compared as spelled. ``None`` for a path that names
+    nothing on any filesystem (an embedded NUL); ``stat`` raises on it.
+    """
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError):
+        resolved = Path(os.path.abspath(path))
+    except ValueError:
+        return None
+    try:
+        return _chain(resolved)
+    except ValueError:
+        return None
+
+
+def _source_refusal(source: tuple[_Rung, ...], rows: list[_SourceRow]) -> str | None:
+    """Which sentence refuses ``source``, or ``None``.
+
+    "Is" and "holds" first, for every row but the inbox's: a folder that is or
+    holds the library or one of ours is refused wherever it sits, inside slskd's
+    folder included. Then "inside", decided by the NEAREST row met walking up.
+    """
+    held = {kind for kind, chain in rows if kind != "inbox" and _relation_of(source, chain)}
+    if "library" in held:
+        return SOURCE_IS_THE_LIBRARY
+    if held:
+        return SOURCE_HOLDS_APP_DATA
+    if any(kind == "inbox" and _same_rung(source[0], chain[0]) for kind, chain in rows):
+        return SOURCE_IS_THE_INBOX
+    return _nearest_container_refusal(source, rows)
+
+
+def _nearest_container_refusal(source: tuple[_Rung, ...], rows: list[_SourceRow]) -> str | None:
+    """Refuse a source whose nearest container is one of ours; the library wins a tie.
+
+    So ``<library>/.trash/x`` is refused while ``<library>/Artist/Album`` and
+    ``<inbox>/Album`` are not. ``database`` has no say here (see :data:`_SourceRow`).
+    """
+    for rung in source[1:]:
+        kinds = {kind for kind, chain in rows if _same_rung(chain[0], rung)}
+        if "library" in kinds:
+            return None
+        if "app" in kinds:
+            return SOURCE_HOLDS_APP_DATA
+        if "inbox" in kinds:
+            return None
+    return None
+
+
+def import_source_refusal(
+    sources: Sequence[str],
+    *,
+    settings: Settings,
+    lib: Any,
+    beets_dir: Path,
+    trash_dir: Path,
+    origins_dir: Path,
+) -> str | None:
+    """The sentence an import start refuses ``sources`` with, or ``None``.
+
+    Refused: a source that is or holds the music library; is, holds or sits
+    inside one of the app's own folders (:func:`protected_entries`, the one list);
+    is or holds ``library.db``'s folder; or IS the inbox, slskd's whole folder.
+    ANY refused member refuses the list, as the copy guard does.
+
+    beets refuses no source for where it is (``import_func`` only checks that it
+    exists), so this is MusicDrop's. Walks UP, never down: one ``stat`` per rung
+    of each chain. So a source above the OTHER spelling of a bind-mounted
+    protected folder is not seen here: that folder's own ancestors are the ones
+    compared. A residual, not guarded anywhere else for an import.
+    """
+    music_dir, library_path = lib_music_and_library(lib)
+    rows: list[_SourceRow] = []
+    for path, _name, setting in protected_entries(
+        settings=settings,
+        music_dir=music_dir,
+        beets_dir=beets_dir,
+        trash_dir=trash_dir,
+        origins_dir=origins_dir,
+        library_path=library_path,
+    ):
+        chain = _resolved_chain(path)
+        if chain is not None:
+            rows.append((_source_kind(setting), chain))
+    for source in sources:
+        chain = _resolved_chain(Path(source))
+        refusal = None if chain is None else _source_refusal(chain, rows)
+        if refusal is not None:
+            return refusal
+    return None
 
 
 def _refuse(

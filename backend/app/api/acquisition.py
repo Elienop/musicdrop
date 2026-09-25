@@ -36,7 +36,11 @@ from app.import_jobs.registry import (
     LibraryRefusedError,
     get_registry,
 )
-from app.import_jobs.runner import SourcePathMissingError, refuse_unless_absent
+from app.import_jobs.runner import (
+    ImportSourceRefusedError,
+    SourcePathMissingError,
+    refuse_unless_absent,
+)
 from app.models.acquisition import (
     AcquisitionQueueStatus,
     ImportInboxItemRequest,
@@ -226,7 +230,10 @@ async def get_acquisition_status(request: Request) -> AcquisitionQueueStatus:
         # validation arm for it to add to (tests/test_openapi_overlay.py).
         422: {
             "model": ErrorDetail,
-            "description": "Every folder handed over no longer exists, or cannot be read.",
+            "description": (
+                "Every folder handed over no longer exists, or cannot be read, or"
+                " one is or holds the library or MusicDrop's own data."
+            ),
         },
         503: _LIBRARY_REFUSED_RESPONSE,
     },
@@ -302,6 +309,9 @@ async def review_inbox(
         # Mapped here so the race answers rather than 500ing.
         detail = str(exc) if exc.unreadable else _BATCH_SOURCES_GONE
         raise HTTPException(status_code=422, detail=detail) from None
+    except ImportSourceRefusedError as exc:
+        # An inbox that holds the library lists the library's own folder.
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     except (LibraryRefusedError, LibraryRootUnavailableError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except RuntimeError:
@@ -347,7 +357,8 @@ async def list_inbox_items(request: Request) -> InboxListing:
         # The folder can be removed between this route's own is_dir check and
         # the start; the import refuses rather than filing nothing.
         422: validation_or_detail_422(
-            "The folder no longer exists or cannot be read, or the request failed validation."
+            "The folder no longer exists or cannot be read, or it is or holds the library"
+            " or MusicDrop's own data, or the request failed validation."
         ),
         # The shared refusal PLUS this route's own ambiguous-name guard, which
         # answers with the same status.
@@ -398,6 +409,8 @@ async def import_inbox_item(
         # 422, not the route's own 404: with the errno split this sentence is
         # accurate about WHICH condition hit, including the unreadable one that
         # "Inbox item not found" would misreport.
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except ImportSourceRefusedError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     except (LibraryRefusedError, LibraryRootUnavailableError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None

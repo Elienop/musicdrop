@@ -318,6 +318,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         bank_dir=get_bank_dir(),
         playlists_dir=get_playlists_dir(),
         trash_origins_dir=boot_origins_dir,
+        settings=settings,
+        beets_dir=handle.beets_dir,
     )
     import_registry.attach_event_broker(app.state.event_broker)
 

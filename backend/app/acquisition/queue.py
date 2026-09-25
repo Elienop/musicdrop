@@ -24,7 +24,11 @@ from app.acquisition.inbox import contain
 from app.acquisition.ledger import AcquisitionLedger
 from app.import_jobs.gates import import_gate_clear
 from app.import_jobs.registry import ImportJobRegistry
-from app.import_jobs.runner import LibraryRootUnavailableError, SourcePathMissingError
+from app.import_jobs.runner import (
+    ImportSourceRefusedError,
+    LibraryRootUnavailableError,
+    SourcePathMissingError,
+)
 from app.models.acquisition import AcquisitionQueueStatus, LedgerOutcome
 from app.models.import_api import ImportPhase
 from app.models.import_models import ImportOptions
@@ -201,6 +205,13 @@ class AcquisitionQueue:
             # in it forged a complete log record at another severity (measured).
             fault = "cannot be read" if exc.unreadable else "is no longer there"
             logger.warning("inbox drain: %r %s; dropped (%r)", folder, fault, exc)
+            self._finish(key, "failed", str(exc))
+            return
+        except ImportSourceRefusedError as exc:
+            # The folder is or holds the library or one of ours: an inbox set to
+            # a folder that holds them. Terminal like the arm above, and caught
+            # so the refusal cannot end this thread; no ledger row, as there.
+            logger.warning("inbox drain: %r refused; dropped (%s)", folder, exc)
             self._finish(key, "failed", str(exc))
             return
 

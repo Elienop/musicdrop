@@ -121,7 +121,7 @@ def _real_registry(tmp_path: Path) -> tuple[ImportJobRegistry, Library]:
     (music / ".keep").write_bytes(b"")  # a real root has entries
     lib = build_library(str(tmp_path / "library.db"), str(music))
     reg = reset_registry(runner=None)
-    reg.attach_library(lib)
+    reg.attach_library(lib, settings=None, beets_dir=None)
     return reg, lib
 
 

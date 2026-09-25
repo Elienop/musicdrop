@@ -62,7 +62,8 @@ def test_apply_reattaches_new_lib_to_import_registry(
     from app.main import app
 
     old_lib = app.state.beets_library.lib
-    get_registry().attach_library(old_lib)  # mirror the lifespan wiring
+    # mirror the lifespan wiring
+    get_registry().attach_library(old_lib, settings=None, beets_dir=None)
     assert get_registry()._lib is old_lib
 
     r = client.post("/api/config/apply")

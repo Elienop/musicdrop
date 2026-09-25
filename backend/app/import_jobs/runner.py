@@ -36,6 +36,8 @@ from app.beets.library import (
 from app.beets.library import (
     require_importable_library_root,
 )
+from app.beets.store_layout import import_source_refusal
+from app.config import Settings
 from app.models.bank import BankApplyDirective
 from app.models.import_models import ImportOptions
 
@@ -56,6 +58,16 @@ class SourcePathMissingError(Exception):
     def __init__(self, message: str, *, unreadable: bool = False) -> None:
         super().__init__(message)
         self.unreadable = unreadable
+
+
+class ImportSourceRefusedError(Exception):
+    """A start was asked for the library, one of MusicDrop's own folders, or slskd's.
+
+    Its own type, beside the two above: the sentence and the remedy differ (pick
+    another folder), and a bank row refused this way cannot be retried by
+    deciding again. The sentence is one of the three in
+    ``app.beets.store_layout`` and carries no path.
+    """
 
 
 #: What ``stat`` answers when there is nothing at the path, as opposed to
@@ -193,7 +205,10 @@ class ImportRunner(Protocol):
         ``LibraryRootUnavailableError`` (root missing or unreadable, or empty while
         the library holds item rows), ``SourcePathMissingError`` (no source could
         be stat'd — absent OR there and refused; one missing member of a list
-        does NOT refuse the start) and
+        does NOT refuse the start),
+        ``ImportSourceRefusedError`` (a source that is or holds the library; is,
+        holds or sits in one of MusicDrop's own folders; or is slskd's whole
+        folder; one bad member refuses the whole start) and
         ``InLibraryCopyError`` (copy-mode source inside the library, checked PER
         path, so one bad member refuses the whole start).
 
@@ -222,8 +237,16 @@ class BeetsImportRunner:
         trash_origins_dir: Path | None = None,
         bank_dir: Path | None = None,
         playlists_dir: Path | None = None,
+        *,
+        settings: Settings | None = None,
+        beets_dir: Path | None = None,
     ) -> None:
         self._lib = lib
+        # What the source refusal lists MusicDrop's own folders from. ``None``
+        # only in unit tests that build a runner bare; the registry always
+        # passes both (``attach_library`` takes them as required keywords).
+        self._settings = settings
+        self._beets_dir = beets_dir
         self._trash_dir = trash_dir
         # Threaded session-ward as a PAIR with trash_dir (see WebImportSession):
         # a Replace records where each trashed copy came from, for Restore.
@@ -274,6 +297,10 @@ class BeetsImportRunner:
             raise refusal
         if self._lib is None:
             return None
+        # After the existence check, so a typo keeps saying it does not exist.
+        refused = self._source_refusal(paths)
+        if refused is not None:
+            raise ImportSourceRefusedError(refused)
         # Only explicit copy is a user-facing error here; default/None are
         # silently corrected to move by the worker guard (run_import_worker).
         if options is not None and options.operation == "copy":
@@ -288,6 +315,29 @@ class BeetsImportRunner:
                     "would duplicate its files. Choose move instead."
                 )
         return forgiven
+
+    def _source_refusal(self, paths: list[str]) -> str | None:
+        """The sentence refusing one of ``paths`` for WHERE it is, or ``None``.
+
+        Skipped only for a runner built without the layout it reads: a bare unit
+        test, or the registry after an Apply refused the layout, whose ``start``
+        raises that refusal before it gets here.
+        """
+        if (
+            self._settings is None
+            or self._beets_dir is None
+            or self._trash_dir is None
+            or self._trash_origins_dir is None
+        ):
+            return None
+        return import_source_refusal(
+            paths,
+            settings=self._settings,
+            lib=self._lib,
+            beets_dir=self._beets_dir,
+            trash_dir=self._trash_dir,
+            origins_dir=self._trash_origins_dir,
+        )
 
     def run(
         self,

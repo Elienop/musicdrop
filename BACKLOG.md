@@ -355,7 +355,8 @@ entry carries a dated correction block where the pass changed it._
      drain (which has no catch-all); importing a Trash ENTRY under `move` files the album and
      leaves an empty entry listed, importing the Trash ROOT sweeps every trashed album into the
      library and orphans its origin records (noisy, nothing lost); a parent of the library — see
-     the `POST /import` footgun entry, now measured on a POPULATED library. The registry and
+     the `POST /import` footgun entry, now measured on a POPULATED library. (All three are
+     refused at start since 2026-09-25, `feat/sources-add-from-folder`.) The registry and
      runner reach the library through one `cast` (`require_importable_library_root`) because
      `import_jobs/` must not import beets; an adapter-exported `Protocol` with `directory: bytes`
      type-checks against a real `Library` (seat, measured with mypy) and would retire the cast and
@@ -1621,8 +1622,15 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   no behavioural risk, so the ratio is good.
 
 - **`POST /import` gives a signed-in owner two footguns with no confirmation and no way
-  out (2026-08-30).** Distinct from the containment ruling recorded under *Accepted
-  residuals* — that ruling is about an **attacker's** marginal capability and it stands.
+  out (2026-08-30).** ~~(1) `/` and a parent of the library are accepted.~~ — **(1) CLOSED
+  2026-09-25** on `feat/sources-add-from-folder` (this branch; design S1, decisions #76/#77).
+  Every start now refuses a source that is or holds the library; is, holds or sits in one
+  of MusicDrop's own folders; or is slskd's whole folder, with one of three fixed
+  422 sentences (`store_layout.import_source_refusal`, asked in `BeetsImportRunner.validate`
+  after the existence check; walks up, never down). A wide folder that holds none of them
+  (`/mnt/bigdisk`) still starts, so (2) below stays open. Distinct from the containment
+  ruling recorded under *Accepted residuals* — that ruling is about an **attacker's**
+  marginal capability and it stands.
   This is about the **owner's** own typo, which it never covered. (1) `{"path": "/"}` is
   accepted and starts a beets autotag walk of the whole container filesystem. The only
   path validation on the way in is `BeetsImportRunner.validate`
