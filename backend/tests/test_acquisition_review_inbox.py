@@ -101,6 +101,8 @@ def test_review_inbox_starts_attended_move_import(tmp_path: Path) -> None:
         assert fake.received_options is not None
         assert fake.received_options.operation == "move"
         assert fake.received_options.unattended is False
+        # beets' ``-I``: a re-download into the same folder is never skipped.
+        assert fake.received_options.incremental is False
         # I1: the SETTLED top-level folder is the toppath — never the inbox root,
         # which would sweep in whatever is still downloading beside it.
         assert fake.received_paths == [str(inbox / "ZZ Artist")]

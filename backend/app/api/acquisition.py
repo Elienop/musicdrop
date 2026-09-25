@@ -177,7 +177,8 @@ def _start_inbox_item(reg: ImportJobRegistry, inbox_dir: Path, name: str) -> str
         return None
     return reg.start(
         str(contained),
-        options=ImportOptions(operation="move"),
+        # beets' ``-I``: see the drain (``AcquisitionQueue._process_one``).
+        options=ImportOptions(operation="move", incremental=False),
         origin="inbox",
     )
 
@@ -319,7 +320,7 @@ async def review_inbox(
             partial(
                 reg.start,
                 [str(folder) for folder in folders],
-                options=ImportOptions(operation="move"),
+                options=ImportOptions(operation="move", incremental=False),
                 origin="inbox",
             )
         )

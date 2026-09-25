@@ -251,9 +251,9 @@ class BeetsImportRunner:
         # Threaded session-ward as a PAIR with trash_dir (see WebImportSession):
         # a Replace records where each trashed copy came from, for Restore.
         self._trash_origins_dir = trash_origins_dir
-        # Where sweep runs write bank rows (<beets_dir>/bank by default),
-        # threaded session-ward exactly like trash_dir. Non-sweep runs never
-        # receive it (the session's _bank_row would no-op anyway).
+        # Where unattended runs bank what they set aside (<beets_dir>/bank by
+        # default), threaded session-ward exactly like trash_dir. Every run
+        # receives it; the session's ``_banks`` decides whether it is used.
         self._bank_dir = bank_dir
         # The owned-playlist store, threaded session-ward like the two above so
         # a Replace can repair the `.m3u8` exports that named the replaced
@@ -356,10 +356,10 @@ class BeetsImportRunner:
             if options is None or options.operation == "default"
             else (options.operation == "move")
         )
-        # Unattended (inbox) imports set uncertain/duplicate albums aside instead
-        # of parking for a human; None options = today's attended manual default.
-        # A sweep is unattended by definition (the session ORs the flag in) and
-        # additionally banks each set-aside, so it gets the bank dir.
+        # Unattended imports (slskd's drain, a sweep) set uncertain, unmatched
+        # and duplicate albums aside instead of parking for a human, and bank
+        # each one; None options = today's attended manual default. A sweep is
+        # unattended by definition (the session ORs the flag in).
         unattended = options.unattended if options is not None else False
         sweep = options.sweep if options is not None else False
         # None = the worker decides from the file operation (hardlink goes
@@ -375,7 +375,7 @@ class BeetsImportRunner:
             trash_origins_dir=self._trash_origins_dir,
             unattended=unattended,
             sweep=sweep,
-            bank_dir=self._bank_dir if sweep else None,
+            bank_dir=self._bank_dir,
             directive=directive,
             playlists_dir=self._playlists_dir,
         )

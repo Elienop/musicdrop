@@ -741,11 +741,12 @@ class WebImportSession(ImportSession):
     """An ImportSession driven by the web UI instead of a terminal prompt."""
 
     bridge: ImportBridge
-    # Unattended (inbox) imports auto-apply strong matches and set the rest aside
-    # (SKIP, never park) so the worker never blocks on a human decision.
+    # Unattended imports (slskd's drain, a sweep) auto-apply strong matches and
+    # set the rest aside (SKIP, never park) so the worker never blocks on a human
+    # decision; with a bank dir each set-aside is also banked (see _banks).
     unattended: bool
-    # Sweep mode: unattended + bank-emitting. The runner builds sweep sessions
-    # with the bank dir; attended/inbox sessions carry sweep=False, bank_dir=None.
+    # Sweep mode: beets' import history forced on, and its bank rows say
+    # source="sweep". Banking itself does not read it.
     sweep: bool
     # Apply mode (chunk 4): when set, every decision hook answers from the
     # banked decision instead of policy. Mutually exclusive with sweep (the
@@ -811,8 +812,8 @@ class WebImportSession(ImportSession):
         # (the directive IS the decision) - the flags OR in, so a caller can
         # never construct a parked (blocking) sweep or apply.
         self.unattended = unattended or sweep or directive is not None
-        # Sweep mode additionally BANKS each set-aside (chunk 3); bank_dir is
-        # where the rows go (threaded from the runner, mirroring trash_dir).
+        # Where an unattended run banks each set-aside (threaded from the
+        # runner, mirroring trash_dir). Every run receives it; _banks decides.
         self.sweep = sweep
         self._bank_dir = bank_dir
         self._directive = directive
@@ -928,11 +929,11 @@ class WebImportSession(ImportSession):
         so beets' deleting arms (``importer/stages.py:361-365``) stay unreachable.
         We reuse the album's feed index (stashed by choose_match) so the prompt
         flips that one row, then block the serial worker until a decision arrives.
-        In sweep mode the prompt is banked (reason needs_dup_resolution) and the
-        new album SKIPped instead — the library copy stays, the decision moves to
-        the bank. The release the task was MATCHED to is banked with it (see
-        _matched_release_payload) so that later decision replays this match
-        instead of re-running the lookup.
+        An unattended run with a bank banks the prompt (reason
+        needs_dup_resolution) and SKIPs the new album instead — the library copy
+        stays, the decision moves to the bank. The release the task was MATCHED
+        to is banked with it (see _matched_release_payload) so that later
+        decision replays this match instead of re-running the lookup.
 
         Our four model actions map onto beets' enum:
         skip_new→SKIP, keep_both→KEEP, merge→MERGE, and replace→KEEP once WE have
@@ -985,7 +986,7 @@ class WebImportSession(ImportSession):
                 dup_action, found_duplicates, task=task, index=index, prompt=prompt
             )
         if self.unattended:
-            if self.sweep:
+            if self._banks():
                 self._bank_duplicate_row(
                     task, index=index, prompt=prompt, has_current_art=incoming.has_current_art
                 )
@@ -1005,7 +1006,7 @@ class WebImportSession(ImportSession):
         prompt: DuplicatePrompt,
         has_current_art: bool,
     ) -> None:
-        """Bank the collision a sweep has nobody to park it on.
+        """Bank the collision an unattended run has nobody to park it on.
 
         The prompt the attended flow would park: the user resolves
         skip/keep/replace/merge later from the Review page, and the release this
@@ -1254,7 +1255,7 @@ class WebImportSession(ImportSession):
         album. We install a per-task wrapper over the bound method at the top of
         ``choose_match`` (precedent: the ``md_album_index`` setattr at the same
         spot) so the SAME duplicate machinery the exact case already uses — the
-        park prompt, the sweep bank, the unattended SKIP, the four resolution
+        park prompt, the bank, the unattended SKIP, the four resolution
         actions via ``get_duplicate_action`` — engages unchanged for the variant.
 
         Idempotent across re-calls on one task: the pristine bound method is
@@ -1533,7 +1534,7 @@ class WebImportSession(ImportSession):
             self.bridge.note_outcome(
                 self._outcome(index, task, recommendation, AlbumOutcomeStatus.skipped)
             )
-            if self.sweep:
+            if self._banks():
                 # Bank the folder as no_match: zero candidates, so the banked
                 # decisions are as-is / as-tracks / ignore (parked stays None —
                 # the BankItem validator only requires a payload for
@@ -1569,9 +1570,9 @@ class WebImportSession(ImportSession):
         if self.unattended:
             # Unattended: the needs_review outcome above records the set-aside;
             # SKIP instead of parking so the worker never blocks on a decision.
-            if self.sweep:
-                # The sweep banks what the inbox merely skips: the exact
-                # ParkedAlbum the attended park would push, persisted instead.
+            if self._banks():
+                # The exact ParkedAlbum the attended park would push,
+                # persisted instead.
                 # The lookups were already paid for - this only serializes them.
                 self._bank_row(
                     task,
@@ -1949,6 +1950,15 @@ class WebImportSession(ImportSession):
                 )
             )
 
+    def _banks(self) -> bool:
+        """Whether this run banks what it sets aside: unattended, with a bank.
+
+        Not ``sweep``: slskd's automatic import banks every album it skips
+        exactly as a sweep does (decisions #76). An attended run parks instead,
+        and a bank apply answers from its row before any banking gate.
+        """
+        return self.unattended and self._bank_dir is not None
+
     def _bank_row(
         self,
         task: ImportTask,
@@ -1964,11 +1974,12 @@ class WebImportSession(ImportSession):
         Called on the worker thread right before the caller SKIPs; the bank
         store's module lock + atomic per-row writes were designed for exactly
         this writer (the API thread reads/mutates rows concurrently). Failures
-        PROPAGATE: a sweep that cannot persist its bank becomes a failed job
-        (worker on_error), never a silent sweep-on that loses rows.
+        PROPAGATE: a run that cannot persist its bank becomes a failed job
+        (worker on_error), never a silent run-on that loses rows.
+        ``source`` is for display only; nothing decides on it.
         """
         if self._bank_dir is None:
-            return  # not a sweep session (defensive; the runner always wires it)
+            return  # narrows the type; every caller asked _banks first
         folder = self._task_folder(task)
         if not folder:
             # No folder identity (pathless task): nothing the apply runner
@@ -1977,7 +1988,7 @@ class WebImportSession(ImportSession):
         bank_store.upsert_by_folder(
             self._bank_dir,
             folder=folder,
-            source="sweep",
+            source="sweep" if self.sweep else "inbox",
             reason=reason,
             fingerprint=folder_fingerprint(Path(folder)),
             artist=_opt_str(task.source.artist),
@@ -1998,7 +2009,7 @@ class WebImportSession(ImportSession):
     ) -> ParkedAlbum | None:
         """The release this task was matched to, as a needs_review row's payload.
 
-        A sweep-banked DUPLICATE row is a decision the pipeline had already
+        A banked DUPLICATE row is a decision the pipeline had already
         made: beets only reaches the duplicate hook after the choice is set, so
         ``task.match`` is the exact release this album would have been imported
         as. Persisting it in the SAME ParkedAlbum shape a needs_review row

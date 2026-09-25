@@ -23,6 +23,7 @@ from beets.importer.actions import DuplicateAction as BeetsDuplicateAction
 from beets.importer.tasks import ImportTask
 from beets.library import Album, Item, Library
 
+from app.bank import store as bank_store
 from app.beets.import_mapping import embedded_art
 from app.beets.import_session import (
     ImportBridge,
@@ -495,16 +496,21 @@ def test_uncertain_rec_skip_choice_skips(monkeypatch: pytest.MonkeyPatch) -> Non
     assert task.match is None
 
 
-def test_unattended_choose_match_skips_instead_of_parking(
-    monkeypatch: pytest.MonkeyPatch,
+def test_unattended_choose_match_banks_and_skips_instead_of_parking(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # Unattended: a non-strong match emits the needs_review outcome (so the feed
-    # records the set-aside) but returns SKIP instead of parking + blocking.
+    # Unattended with a bank (slskd's drain): a non-strong match emits the
+    # needs_review outcome (so the feed records the set-aside), banks the album
+    # as source "inbox", and returns SKIP instead of parking + blocking.
     match = _build_match(BeetsRec.medium)
     bridge = ImportBridge()
     session = _make_session(bridge)
     session.unattended = True
+    session._bank_dir = tmp_path / "bank"
+    folder = tmp_path / "album"
+    folder.mkdir()
     task = _make_task(match, monkeypatch, BeetsRec.medium)
+    task.paths = [os.fsencode(str(folder))]
 
     result = session.choose_match(task)
 
@@ -512,6 +518,8 @@ def test_unattended_choose_match_skips_instead_of_parking(
     assert bridge.pending_count() == 0  # did NOT park
     outcomes = bridge.drain_outcomes()
     assert any(o.status is AlbumOutcomeStatus.needs_review for o in outcomes)
+    [row] = bank_store.list_items(tmp_path / "bank", offset=0, limit=10)
+    assert (row.source, row.reason, row.folder) == ("inbox", "needs_review", str(folder))
 
 
 def test_unattended_worker_runs_to_completion_without_parking(

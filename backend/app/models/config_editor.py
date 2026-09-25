@@ -307,8 +307,8 @@ def _incremental_advisory(section: ImportSection) -> str | None:
     return (
         "MusicDrop honours import.incremental: a folder in beets' import history is"
         " skipped and counted as already known. A sweep or a hardlink import forces it"
-        " on and sets incremental_skip_later itself; a bank apply and Import them again"
-        " force it off. `beet import` behaves the same way."
+        " on and sets incremental_skip_later itself; a bank apply, slskd's imports and"
+        " Import them again force it off. `beet import` behaves the same way."
     )
 
 
@@ -376,7 +376,7 @@ def _always_moves_advisory(key: str) -> Callable[[ImportSection], str | None]:
 #: snapshots, forces and restores these keys around every session —
 #: ``incremental`` excepted: it is honoured on the default review path and
 #: forced by four exclusive arms, sweep, bank-apply, hardlink and the per-run
-#: ``incremental: False`` that "Import them again" and Review send
+#: ``incremental: False`` that "Import them again", Review and slskd's imports send
 #: (``import_session.run_import_worker``), which is what its advisory says).
 #:
 #: ``link``/``hardlink``/``reflink`` are HONOURED on a manual import, a sweep

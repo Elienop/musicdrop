@@ -154,6 +154,8 @@ def test_import_inbox_item_starts_attended_move(tmp_path: Path) -> None:
         assert fake.received_options is not None
         assert fake.received_options.operation == "move"
         assert fake.received_options.unattended is False
+        # beets' ``-I``: a re-download into the same folder is never skipped.
+        assert fake.received_options.incremental is False
         state = client.get(f"/api/import/{body['job_id']}").json()
         assert state["origin"] == "inbox"
 

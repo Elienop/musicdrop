@@ -1538,6 +1538,64 @@ def test_slot_toctou_requeues_and_retries(tmp_path: Path) -> None:
         runner.stop()
 
 
+def test_a_folder_rebanked_while_its_row_applies_survives_a_lost_slot(tmp_path: Path) -> None:
+    # The defer's twin of the claim race below. slskd's drain re-banks a folder
+    # (decisions #76) while its row is ``applying``, and then ``start`` loses
+    # the slot. The defer must be a compare-and-set: a blind "queued" onto the
+    # re-banked row makes a queued row with no decision, which every read and
+    # the FIFO pick refuse, so the whole apply queue stops.
+    fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.applied, album_id=9)])
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    folder_a = _folder(tmp_path, "A")
+    raced_id = _seed_queued(bank, folder_a)  # decided first: the FIFO head
+    other_id = _seed_queued(bank, _folder(tmp_path, "B"))
+
+    real_start = reg.start
+    calls = {"n": 0}
+
+    def rebank_then_lose_the_slot(
+        source: str | list[str],
+        *,
+        options: ImportOptions | None = None,
+        origin: ImportOrigin = "manual",
+        directive: BankApplyDirective | None = None,
+    ) -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            claimed = store.get_item(bank, raced_id)
+            assert claimed is not None
+            assert claimed.status == "applying"  # the window is real
+            store.upsert_by_folder(
+                bank,
+                folder=str(folder_a),
+                source="inbox",
+                reason="no_match",
+                fingerprint="0" * 64,
+            )
+            raise RuntimeError("an import is already running")
+        return real_start(source, options=options, origin=origin, directive=directive)
+
+    reg.start = rebank_then_lose_the_slot  # type: ignore[method-assign]
+
+    runner = _make_runner(bank, reg)
+    runner.start()
+    try:
+        done = _poll(
+            lambda: store.get_item(bank, other_id),
+            lambda i: i is not None and i.status == "done",
+        )
+        assert done is not None
+        assert done.status == "done"  # the next queued row still applied
+        raced_row = store.get_item(bank, raced_id)
+        assert raced_row is not None
+        assert raced_row.status == "needs_review"  # the re-bank survived
+        assert raced_row.decided is None
+        assert raced_row.source == "inbox"
+    finally:
+        runner.stop()
+
+
 def test_claim_race_skips_rebanked_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The history-loss race: between the FIFO pick and the queued->applying
     # claim, the folder is re-banked (upsert resets the row to needs_review,

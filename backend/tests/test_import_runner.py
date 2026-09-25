@@ -256,18 +256,18 @@ def test_runner_forwards_unattended_to_session(
 
 
 @pytest.mark.parametrize(
-    ("options", "expected_sweep", "expected_bank"),
+    ("options", "expected_sweep"),
     [
-        (ImportOptions(sweep=True), True, Path("/tmp/bank")),
-        # Inbox: unattended but NOT banking - bank_dir must stay None.
-        (ImportOptions(unattended=True), False, None),
-        (None, False, None),
+        (ImportOptions(sweep=True), True),
+        # slskd's drain banks too (decisions #76), so it needs the bank dir.
+        (ImportOptions(unattended=True), False),
+        # Handed over, never used: the session banks only when unattended.
+        (None, False),
     ],
 )
 def test_runner_forwards_sweep_and_bank_dir(
     options: ImportOptions | None,
     expected_sweep: bool,
-    expected_bank: Path | None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.import_jobs.runner as runner_mod
@@ -302,7 +302,7 @@ def test_runner_forwards_sweep_and_bank_dir(
     )
     assert finished.wait(timeout=2.0)
     assert captured["sweep"] is expected_sweep
-    assert captured["bank_dir"] == expected_bank
+    assert captured["bank_dir"] == Path("/tmp/bank")
     assert captured["worker_sweep"] is expected_sweep
 
 

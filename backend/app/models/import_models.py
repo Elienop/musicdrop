@@ -23,10 +23,11 @@ class ImportOptions(BaseModel):
     #
     # ``operation`` "default" falls through to the user's beets config (the
     # manual-import default); "move"/"copy" force that operation for this import
-    # only. ``unattended`` True is the inbox path: no human review — uncertain
-    # and duplicate albums are set aside rather than parked. ``sweep`` True is
-    # the banking sweep: an unattended, beets-incremental run that BANKS every
-    # set-aside album (with its candidate payload), recorded as origin="sweep".
+    # only. ``unattended`` True is slskd's drain: no human review — uncertain,
+    # unmatched and duplicate albums are set aside rather than parked, and BANKED
+    # (with their candidate payload) when the runner has a bank. ``sweep`` True
+    # is the banking sweep: an unattended, beets-incremental run, recorded as
+    # origin="sweep".
     # A sweep is unattended by definition (the session enforces ``unattended or
     # sweep``) and forces no file operation.
     #

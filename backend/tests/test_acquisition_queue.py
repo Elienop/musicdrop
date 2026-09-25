@@ -47,7 +47,9 @@ from app.models.import_models import (
 T = TypeVar("T")
 
 _TERMINAL = (ImportPhase.done, ImportPhase.failed)
-_INBOX_OPTS = ImportOptions(operation="move", unattended=True)
+# beets' ``-I`` rides along: a re-download lands in the same folder, and history
+# keys on the folder path alone (decisions #76).
+_INBOX_OPTS = ImportOptions(operation="move", unattended=True, incremental=False)
 
 
 def _poll(
@@ -111,10 +113,10 @@ def test_queue_drains_to_registry_with_move_unattended_inbox(tmp_path: Path) -> 
         _poll(lambda: calls, lambda c: len(c) > 0)
         assert calls[0] == (
             str(folder),
-            ImportOptions(operation="move", unattended=True),
+            _INBOX_OPTS,
             "inbox",
         )
-        assert fake.received_options == ImportOptions(operation="move", unattended=True)
+        assert fake.received_options == _INBOX_OPTS
         # The drain marks the ledger + pops the dedupe entry once the import ends.
         _poll(lambda: led.seen(folder), lambda seen: seen is True)
         assert led.seen(folder) is True
@@ -163,7 +165,7 @@ def test_queue_defers_while_backfill_active(
         # Clear the backfill: the drain proceeds.
         monkeypatch.setattr("app.lyrics_jobs.registry.lyrics_backfill_active", lambda: False)
         _poll(lambda: fake.received_options, lambda o: o is not None)
-        assert fake.received_options == ImportOptions(operation="move", unattended=True)
+        assert fake.received_options == _INBOX_OPTS
     finally:
         q.stop()
 
@@ -199,7 +201,7 @@ def test_queue_defers_while_swap_lock_held(tmp_path: Path) -> None:
     try:
         asyncio.run(hold_then_release())
         _poll(lambda: fake.received_options, lambda o: o is not None)
-        assert fake.received_options == ImportOptions(operation="move", unattended=True)
+        assert fake.received_options == _INBOX_OPTS
     finally:
         q.stop()
 
@@ -315,6 +317,38 @@ def test_failed_inbox_import_marks_failed_not_imported(tmp_path: Path) -> None:
         assert s.set_aside == 0
         entry = next(e for e in led.entries() if e.path == str(folder))
         assert entry.outcome == "failed"
+    finally:
+        q.stop()
+
+
+def test_a_drain_run_whose_only_album_was_banked_no_match_is_set_aside(tmp_path: Path) -> None:
+    """A no-match album is banked like an unsure one (decisions #76), so the run
+    is ``set_aside``, not ``imported``. Its feed row reads ``skipped``, which the
+    feed's own set-aside count leaves out."""
+    no_match = AlbumOutcome(
+        album_index=0,
+        folder="/inbox/Album",
+        artist="A",
+        album="B",
+        recommendation=Recommendation.none,
+        confidence=0.0,
+        status=AlbumOutcomeStatus.skipped,
+    )
+    fake = FakeImportRunner(applied=[no_match])
+    reg = ImportJobRegistry(runner=fake)
+    led = AcquisitionLedger(tmp_path / "ledger.json")
+    q = AcquisitionQueue(import_registry=reg, ledger=led, poll_interval=0.01, busy_backoff=0.02)
+    folder = tmp_path / "inbox" / "Album"
+    folder.mkdir(parents=True)
+
+    q.start()
+    try:
+        q.enqueue(folder)
+        _poll(lambda: q.status().processed, lambda n: n >= 1)
+        s = q.status()
+        assert (s.processed, s.set_aside, s.failed) == (1, 1, 0)
+        entry = next(e for e in led.entries() if e.path == str(folder))
+        assert entry.outcome == "set_aside"
     finally:
         q.stop()
 

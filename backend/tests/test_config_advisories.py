@@ -412,3 +412,5 @@ def test_incremental_advisory_names_every_key_the_forcing_touches() -> None:
     assert "incremental_skip_later" in msg
     assert "bank apply" in msg
     assert "Import them again" in msg
+    # slskd's imports send the same ``incremental: False`` (decisions #76).
+    assert "slskd" in msg

@@ -452,7 +452,10 @@ class BankApplyRunner:
             # check and start() (TOCTOU, acquisition's defer posture): revert,
             # back off, retry next pass. Without the second arm the row failed
             # permanently on a share that was merely unmounted (measured).
-            bank_store.set_status(self._bank_dir, item.id, "queued")
+            # A compare-and-set like the claim: a folder re-banked meanwhile is
+            # a fresh needs_review row, and a blind write would make it a queued
+            # row with no decision, which every read refuses.
+            bank_store.set_status(self._bank_dir, item.id, "queued", expected="applying")
             self._stop.wait(self._busy_backoff)
             return
         except SourcePathMissingError as exc:

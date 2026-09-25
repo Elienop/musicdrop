@@ -219,7 +219,7 @@ class ImportJobRegistry:
         beets_dir: Path | None,
     ) -> None:
         """Provide the beets Library + Trash dir + bank dir + playlists dir the
-        production runner builds from (bank_dir feeds sweep-mode sessions;
+        production runner builds from (bank_dir feeds unattended sessions;
         playlists_dir feeds the post-Replace `.m3u8` re-export).
 
         ``trash_origins_dir`` is keyword-last rather than beside ``trash_dir``

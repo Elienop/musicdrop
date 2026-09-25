@@ -170,7 +170,7 @@ entry carries a dated correction block where the pass changed it._
      sweep forces `incremental_skip_later` off (a user's `yes` made every sweep re-bank the
      same folders). The way past the history is beets' own `-I` — `ImportOptions.incremental:
      false` (the wire admits `false` and `null`; `true` is a 422) — sent by **Import them again** and always by the
-     Bank's Review now. `copy`, `link` and `reflink` configs are left to the user (`decisions`
+     Bank's Review now, slskd's drain and both inbox Review buttons (branch 2, S2). `copy`, `link` and `reflink` configs are left to the user (`decisions`
      #53: the setting writes `hardlink`), though `link: yes` shares the same-file hazard below
      (measured: `util.samefile` follows the symlink).
      Recorded by the 2026-09-18 review seats:

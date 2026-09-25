@@ -169,7 +169,10 @@ class AcquisitionQueue:
         try:
             job_id = self._import_registry.start(
                 str(folder),
-                options=ImportOptions(operation="move", unattended=True),
+                # ``incremental=False`` is beets' own ``-I``: slskd writes a
+                # re-download into the same folder, and history keys on the
+                # folder path alone, so a recorded folder would be skipped.
+                options=ImportOptions(operation="move", unattended=True, incremental=False),
                 origin="inbox",
             )
         except (RuntimeError, LibraryRootUnavailableError) as exc:
@@ -305,7 +308,11 @@ class AcquisitionQueue:
             # (_entry_outcome). A stop accepted after the last abort point
             # raises nothing and the folder imported in full.
             return ("failed", _STOPPED_BEFORE_FINISH)
-        if state.set_aside > 0:
+        # Every album this unattended run skipped was banked: the set-aside
+        # rows and the no-match skips (``skipped``), which the feed does not
+        # count as set aside. A drain run starts no directive, so a skip here
+        # is never a decision.
+        if state.set_aside > 0 or state.progress.skipped > 0:
             return ("set_aside", None)
         return ("imported", None)
 
