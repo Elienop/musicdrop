@@ -425,9 +425,18 @@ def import_source_refusal(
     folder. ANY refused member refuses the list, as the copy guard does.
 
     Each source is asked twice, where it resolves and where the folder beets
-    will walk resolves (:func:`_walked_chain`), and each protected folder is
-    compared as resolved and as spelled (:func:`_spelled_chain`). Refused when
-    either asking refuses; the earlier sentence of :data:`_SOURCE_ANSWERS` wins.
+    will walk resolves (:func:`_walked_chain`). Refused when either asking
+    refuses; the earlier sentence of :data:`_SOURCE_ANSWERS` wins.
+
+    Each protected folder is compared as resolved and as it arrives here
+    (:func:`_spelled_chain`). That is a second spelling only for a folder that
+    arrives as typed: ``directory:`` (beets keeps its spelling,
+    ``beets/library/library.py:80``), an absolute ``library:``, the image caches,
+    the playlist exports, and a store set in the environment. The beets dir, a
+    configured Trash or origin store, and every store defaulted under the beets
+    dir arrive already resolved (``app/beets/setup.py:230``,
+    ``app/beets/trash.py:1033``), so a symlinked one is compared by its target
+    only: a residual in BACKLOG's alias-BELOW-the-source entry.
 
     beets refuses no source for where it is (``import_func`` only checks that it
     exists), so this is MusicDrop's. Walks UP, never down: one ``stat`` per rung

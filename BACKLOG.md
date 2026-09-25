@@ -1631,10 +1631,13 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   422 sentences (`store_layout.import_source_refusal`, asked in `BeetsImportRunner.validate`
   after the existence check; walks up, never down). It asks both where a source resolves
   and the folder beets walks (beets' `normpath` collapses `..` lexically), and compares each
-  protected folder as spelled and as resolved. What it does not see is the next entry. A wide folder that holds none of them
-  (`/mnt/bigdisk`) still starts, so (2) below stays open. Distinct from the containment
-  ruling recorded under *Accepted residuals* — that ruling is about an **attacker's**
-  marginal capability and it stands.
+  protected folder as resolved and as it arrives. Only a folder that arrives as typed gets both
+  spellings: `directory:`, an absolute `library:`, the caches, the exports and a store set in
+  the environment. The beets dir, a configured Trash or origin store and the stores defaulted
+  under the beets dir arrive resolved. What it does not see is the next entry. A wide folder
+  that holds none of them (`/mnt/bigdisk`) still starts, so (2) below stays open. Distinct from
+  the containment ruling recorded under *Accepted residuals* — that ruling is about an
+  **attacker's** marginal capability and it stands.
   This is about the **owner's** own typo, which it never covered. (1) `{"path": "/"}` is
   accepted and starts a beets autotag walk of the whole container filesystem. The only
   path validation on the way in is `BeetsImportRunner.validate`
@@ -1684,7 +1687,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 - **The import-start refusal does not see an alias BELOW the source (2026-09-25,
   `feat/sources-add-from-folder`, design S1 residuals 1-2).** Search words: bind mount,
   symlink inside a source, import refusal, holds the library. `import_source_refusal` walks UP
-  from the source and from each protected folder, never down, so two shapes pass it:
+  from the source and from each protected folder, never down, and some protected folders reach
+  it already resolved, so these shapes pass it:
   - **A bind-mount alias of the library (or one of ours) inside the source's tree.** Measured by
     the S1 security seat (L-1) with two real bind mounts under `unshare -rm`: `directory:
     <root>/music` a bind of `host/media/musicdrop`, and `<root>/media` a bind of `host/media`.
@@ -1694,9 +1698,26 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   - **A symlink inside a source that points at the library or an app folder.** beets follows
     directory links while it walks (`sorted_walk`'s `os.path.isdir`,
     `beets/util/__init__.py:250`).
-  Why it can wait: both need the operator's own mount or link, and the owner's layout keeps
+  - **A symlinked `MUSICDROP_BEETS_DIR`, `MUSICDROP_TRASH_DIR` or `MUSICDROP_TRASH_ORIGINS_DIR`,
+    and the source its spelled parent.** These arrive resolved (`app/beets/setup.py:230`,
+    `app/beets/trash.py:1033` and its origin twin), and so does every store defaulted under the
+    beets dir, so the refusal never sees the spelling. Measured by both S1 fix-round-1 seats
+    through the production wiring: with `<root>/config/beets -> <root>/pool/appdata/beets` and
+    the caches moved away, the source `<root>/config` is ALLOWED, and beets yields
+    `<root>/config/beets/inbox/HalfArrived` and `<root>/config/beets/trash/Artist/Trashed`; a
+    Trash at `<root>/stuff/trash -> <root>/pool/trash` lets `<root>/stuff` through the same
+    way. `<root>/pool/appdata` and `<root>/config/beets` are refused. On the shipped image
+    `/data` is refused anyway, by the `/data/cache` rows, which arrive spelled. Harm: the Trash
+    is imported (noisy, nothing lost), and a slskd writing into the default `<B>/inbox` gets
+    its half-arrived albums imported (the #77 concern). Future fix, **a corrected line in code,
+    can wait, not built**: about 4 lines adding `_spelled_chain` rows for `settings.beets_dir`
+    and, when set, `settings.trash_dir` and `settings.trash_origins_dir`; one spelled beets-dir
+    row covers every store defaulted under it. Engine check: beets has no Trash or store dirs;
+    these are MusicDrop's own resolvers. The `import_task_created` guard below would close it
+    too.
+  Why it can wait: all three need the operator's own mount or link, and the owner's layout keeps
   `/data` apart with one `/media` bind mount (server facts 2026-09-15). Future fix, **a new
-  mechanism, not built**: on beets' `import_task_created` (`beets/importer/tasks.py:543-557`; a
+  mechanism, not built**: on beets' `import_task_created` (`beets/importer/tasks.py:544-557`; a
   handler returning `[]` drops the task), drop an album folder that the existing
   `is_in_library_source` (`app/fsutil.py:372`) or `protected_trees().ids`
   (`app/beets/protected.py:129`) identify as the library's or ours. It walks up from folders
@@ -1715,8 +1736,9 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   least-wrong of the three values, and the banner reads "Fix the folder or its share, then
   decide again." (`frontend/src/pages/review/BankReviewPage.tsx:233`). The row's folder cannot
   change, so every re-decide fails with the same sentence; Rescan also resets the row to
-  `needs_review` on the false premise that the folder answered (`bank/store.py`, the rescan
-  docstring). Harmless: one operator, the same sentence each time. The real remedy is removing
+  `needs_review` although nothing was disproved: a `fix_folder` row resets because a rescan
+  proves a folder that would not answer now does, and this row failed for where its folder is,
+  not because it would not answer (`bank/store.py`, the rescan docstring). Harmless: one operator, the same sentence each time. The real remedy is removing
   the row. A fourth recovery value with a true headline is **a new mechanism**, recorded here,
   not built.
 

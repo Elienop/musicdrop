@@ -184,14 +184,31 @@ def test_a_climb_that_resolves_into_the_library_is_still_refused(tmp_path: Path)
     assert _refusal(layout, link / "..") == SOURCE_IS_THE_LIBRARY
 
 
+def test_a_climb_into_the_library_is_refused_with_nothing_beside_the_link(
+    tmp_path: Path,
+) -> None:
+    """Only the source as typed, resolved, sees the library here.
+
+    beets walks ``<root>/other``, which holds nothing of ours, and follows
+    ``link`` into the library's ``Artist`` folder. Without the as-typed question
+    this start is allowed, not refused with another sentence.
+    """
+    layout = _layout(tmp_path)
+    link = _folder(layout.root / "other") / "link"
+    link.symlink_to(_folder(layout.music / "Artist"))
+    assert _refusal(layout, link / "..") == SOURCE_IS_THE_LIBRARY
+
+
 def test_a_parent_of_a_symlinked_library_spelling_is_refused(tmp_path: Path) -> None:
     """``directory: <media>/music`` linked to ``<pool>/music``: beets keeps the
-    spelling and follows the link, so ``<media>`` walks the library's own rows."""
+    spelling and follows the link, so ``<media>`` walks the library's own rows.
+    ``<pool>`` holds the library where it resolves, so it is refused too."""
     pool = _folder(tmp_path / "root" / "pool" / "music")
     media = _folder(tmp_path / "root" / "media")
     (media / "music").symlink_to(pool)
     layout = _layout(tmp_path)
     assert _refusal(layout, media) == SOURCE_IS_THE_LIBRARY
+    assert _refusal(layout, pool.parent) == SOURCE_IS_THE_LIBRARY
     assert _refusal(layout, _folder(media / "music" / "Artist" / "Album")) is None
 
 
