@@ -2,7 +2,7 @@
 
 The slskd inbox path is fixed (configured once), so reviewing the set-aside
 backlog is a single click that resolves the path SERVER-SIDE and starts a normal
-attended import with ``operation="move"`` (applied albums leave the inbox) and
+attended import with ``operation="default"`` (beets' own file operation) and
 ``origin="inbox"`` — targeting the SETTLED top-level folders, never the inbox
 root (which is the downloader's live output dir). Nothing settled is a no-op
 (``started=False``), never an error. The shared import-slot gate refuses
@@ -80,7 +80,7 @@ def test_review_inbox_only_ledger_is_empty_noop(tmp_path: Path) -> None:
     assert fake.received_options is None  # nothing started
 
 
-def test_review_inbox_starts_attended_move_import(tmp_path: Path) -> None:
+def test_review_inbox_starts_attended_import_with_beets_file_operation(tmp_path: Path) -> None:
     inbox = tmp_path / "inbox"
     album = inbox / "ZZ Artist" / "Some Album"
     album.mkdir(parents=True)
@@ -97,9 +97,10 @@ def test_review_inbox_starts_attended_move_import(tmp_path: Path) -> None:
         assert body["pending"] == 1
         job_id = body["job_id"]
         assert job_id
-        # Attended (NOT unattended) + forced move; labelled origin=inbox.
+        # Attended (NOT unattended) + beets' own file operation (decisions #77);
+        # labelled origin=inbox.
         assert fake.received_options is not None
-        assert fake.received_options.operation == "move"
+        assert fake.received_options.operation == "default"
         assert fake.received_options.unattended is False
         # beets' ``-I``: a re-download into the same folder is never skipped.
         assert fake.received_options.incremental is False

@@ -15,11 +15,12 @@ import logging
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.beets.import_mapping import embedded_art
-from app.beets.import_session import ImportBridge
+from app.beets.import_session import ImportBridge, album_folder_under_source
 from app.config import Settings
 from app.events.broker import EventBroker
 from app.import_jobs.runner import BeetsImportRunner, ImportRunner
@@ -112,6 +113,10 @@ class ImportJob:
     # with several (beets takes each as its own toppath). Surfaced on the job
     # state so a reloaded Import page can re-post the same folder.
     path: str | None = None
+    # Every folder this job was started with, as the caller passed them. What
+    # a finished run records as imported is chosen from these
+    # (:meth:`ImportJobRegistry._fully_landed_sources`).
+    sources: tuple[str, ...] = ()
     # Sweep-origin jobs count instead of accumulating feed rows: a whole-library
     # sweep would otherwise hold thousands of _FeedAlbum dicts. None for
     # manual/inbox jobs (their feed is untouched).
@@ -187,8 +192,19 @@ class ImportJobRegistry:
         self._job: ImportJob | None = None
         self._lock = threading.Lock()
         self._broker: EventBroker | None = None
+        self._recorder: Callable[[list[str]], None] | None = None
 
     # ----- wiring -----
+
+    def attach_import_recorder(self, recorder: Callable[[list[str]], None] | None) -> None:
+        """Attach what a finished run hands the folders it fully landed.
+
+        Wired at lifespan to the acquisition ledger, which keeps the ones inside
+        slskd's folder (decisions #77: remember and hide). Called on the worker
+        thread, outside the registry lock. None in tests (no lifespan) = nothing
+        is recorded.
+        """
+        self._recorder = recorder
 
     def attach_event_broker(self, broker: EventBroker | None) -> None:
         """Attach the SSE broker so a finished import notifies open tabs.
@@ -337,6 +353,7 @@ class ImportJobRegistry:
                 bridge=ImportBridge(),
                 origin=origin,
                 path=paths[0] if len(paths) == 1 else None,
+                sources=tuple(paths),
                 sweep=SweepStatus() if origin == "sweep" else None,
                 directive_astracks=directive is not None and directive.action == "astracks",
             )
@@ -382,6 +399,7 @@ class ImportJobRegistry:
 
     def _on_finish(self, job_id: str) -> None:
         finished = False
+        landed: list[str] = []
         with self._lock:
             if (
                 self._job is not None
@@ -392,11 +410,59 @@ class ImportJobRegistry:
                 self._job.stop_clock()
                 self._job.phase = ImportPhase.done
                 finished = True
+                landed = self._fully_landed_sources(self._job)
+        # Recorded BEFORE the event below, so a tab that refetches on it already
+        # sees the folder gone from "Not imported yet".
+        if landed:
+            self._record_imported(landed)
         # Emit OUTSIDE the lock: a finished import (manual / inbox / bank-apply
         # all route through here) tells every open tab to refetch. publish is
         # thread-safe (this runs on the worker thread).
         if finished:
             self._notify_changed()
+
+    @staticmethod
+    def _fully_landed_sources(job: ImportJob) -> list[str]:
+        """The start folders whose every album in the feed landed (caller holds the lock).
+
+        Only for a run that finished ``done`` and was not cut short: a stop that
+        aborted may have ended the run before a folder's next album was reached,
+        and the feed cannot tell that folder from a finished one, so nothing is
+        recorded (``job_aborted``'s own flag). A folder with no album in the
+        feed has nothing to judge and records nothing, which is also why a sweep
+        records nothing: it keeps no per-album feed. "Landed" is the verdict
+        ``state()`` counts ``applied`` with.
+        """
+        if job.bridge.abort_raised():
+            return []
+        landed = ImportJobRegistry._landing_map(job, terminal=True)
+        fully_landed: list[str] = []
+        for source in job.sources:
+            verdicts = [
+                landed[index]
+                for index, row in job.albums.items()
+                if album_folder_under_source(row.outcome.folder, source)
+            ]
+            if verdicts and all(verdicts):
+                fully_landed.append(source)
+        return fully_landed
+
+    def _record_imported(self, folders: list[str]) -> None:
+        """Hand ``folders`` to the attached recorder; a failed write is logged.
+
+        Worker thread, outside the lock. A write that fails leaves the folder
+        listed under "Not imported yet", the safe side, so the finished run is
+        not failed for it.
+        """
+        recorder = self._recorder
+        if recorder is None:
+            return
+        try:
+            recorder(folders)
+        except OSError as exc:
+            operator_logger.warning(
+                "import: could not record the imported folders; they stay listed (%r)", exc
+            )
 
     def _on_error(self, job_id: str, message: str) -> None:
         matched = False

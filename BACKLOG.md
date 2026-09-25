@@ -114,9 +114,11 @@ entry carries a dated correction block where the pass changed it._
      S5): **Keep downloads** in Settings -> Beets, `POST /api/config/import-operation`, writes
      those keys and runs Apply's reload in one request, under Apply's lock and job gate; a
      cross-filesystem hardlink fails the job with one plain line, then beets' own.
-     slskd's auto-import keeps MOVING until branch 2 — the inbox routes and the drain send
-     `operation="move"`, overriding the global switch by design, and `config_editor`'s
-     link/hardlink/reflink advisory is where that is currently disclosed.
+     slskd follows the config too since branch 2, S6 (`decisions` #77): the drain and both
+     inbox Review buttons send `operation="default"`, as a bank apply does, and every run that
+     lands every album of a folder inside slskd's folder records it in the ledger as
+     `imported`, so "Not imported yet" hides it until a file is added, removed or renamed in it.
+     `config_editor` lost its link/reflink advisory; hardlink's names only the history it forces.
    - **A provider holds** a name, a kind (slskd, or a plain folder), the folder MusicDrop reads,
      the operation and, only when the source reports its own container paths (slskd today), that
      reported root (today's `downloads_prefix`).
@@ -588,8 +590,9 @@ entry carries a dated correction block where the pass changed it._
      delete, Apply, swap lock, claim lock, TOCTOU.
    - **Upgrade note owed in the release.** A user running `copy: yes, delete: yes` today has
      manual imports of a plain folder silently removing the source; after the pin they keep it, so
-     that folder stops self-emptying. Inbox/slskd paths are unaffected (they send
-     `operation="move"`). Name `move` as the supported alternative. Also name the new boot
+     that folder stops self-emptying. Since branch 2, S6, slskd's imports follow the same config,
+     so its downloads stay too; so do an old starter's (`copy: yes` + `move: no`), which used to
+     move. Name `move` (Keep downloads off) as the supported alternative. Also name the new boot
      refusals (owner ruling 2026-09-21): a config that started on the previous release stops at
      boot if an `include:` is missing or broken, or if the include list is over 32 entries or
      1 MiB. Before, beets loaded it without the include and said so only on stderr.
@@ -1829,6 +1832,42 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     count and runs on the event loop (~1.8 s at 62 KB; secret holders only). Pydantic's
     `StringConstraints(max_length=…)` is the engine answer, as `StartImportRequest.path` in
     `backend/app/models/import_api.py` already does.
+
+- **What remembering imported slskd folders leaves open (2026-09-26, branch-2 S6 design
+  residuals 32-40, 44).** Search words: ledger, imported, remember and hide, Not imported yet,
+  kept download, recorder. A run records a folder only when it ends `done`, was not cut short,
+  and every album it fed from that folder landed (`ImportJobRegistry._fully_landed_sources`,
+  `app/acquisition/inbox.py::record_imported`).
+  - Deleting an album from the library leaves its slskd folder hidden (the owner's accepted
+    trade-off, `decisions` #77). Add from folder still reaches it; only a change in the folder
+    un-hides it.
+  - The record sees only the folder's own entries: a change inside a subfolder, or a file
+    rewritten in place under the same name, does not bring it back. slskd writes one level and
+    never overwrites, so its own downloads cannot do this; a nested album copied in by hand can.
+  - A record deeper than the list entry never hides the entry: Add from folder on `X/CD1`, or a
+    drain folder that `coalesce_album_root` walked up. The entry stays listed.
+  - A stopped or failed run records nothing, even for folders it finished; they stay listed, and
+    reviewing one again asks the duplicate question for the album already imported (copy,
+    hardlink, symlink, reflink).
+  - Sweep & bank records nothing (a sweep keeps no per-album feed), so a slskd folder a sweep
+    imported stays listed.
+  - A drain run that loses its result to a raced handoff writes `failed`
+    (`AcquisitionQueue._raced_handoff`) over the recorder's `imported`: the folder shows "Import
+    failed" though it imported. Rare: another import must claim the slot inside the drain's 0.5 s
+    poll.
+  - Under in place, every slskd album's page shows the "outside your library folder" notice
+    (`frontend/src/pages/albums/AlbumDetailPage.tsx`) with its "If an import stopped part-way"
+    hint, which does not apply, and MusicDrop's Move to Trash then moves the download itself.
+  - No MusicDrop "Move to Trash" for download folders (`decisions` #77): deleting a download for
+    good is slskd's System → Files, which needs slskd's `remote_file_management: true` (default
+    `false`). Not built.
+  - An ignored row stays `Ignored` in the bank after its folder is imported from "Not imported
+    yet".
+  - A history-skipped album (a manual hardlink run with history on) emits no feed row, so a
+    folder whose other albums landed is recorded; the skipped one was already imported.
+  - Upgrade: an install on the old starter's `copy: yes` + `move: no` copies slskd downloads from
+    S6 on, and its disk use grows; Keep downloads off moves. README carries it; the release note
+    must too.
 
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth

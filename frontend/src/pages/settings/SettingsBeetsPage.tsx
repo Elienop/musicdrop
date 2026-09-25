@@ -5,6 +5,7 @@ import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useLibraryJobActive } from "@/api/useLibraryJobActive";
+import { useSlskdSettings } from "@/api/useSlskd";
 import {
   type BeetsConfigSnapshot,
   type ConfigAdvisory,
@@ -153,6 +154,9 @@ export function SettingsBeetsPage() {
   // reloads beets in one request, so while it runs the page is `applying`.
   const operation = useImportOperation();
   const flip = useSetImportOperation();
+  // The link and in-place notes add a slskd sentence only while its
+  // auto-import is on, so a user without slskd never reads about it.
+  const slskd = useSlskdSettings();
   // Any library job (import / lyrics / artist-art / reorganize) blocks Apply
   // server-side; mirror that so Apply disables instead of firing into a 409.
   const job = useLibraryJobActive();
@@ -335,6 +339,7 @@ export function SettingsBeetsPage() {
   const importSection = (
     <ImportOperationSection
       operation={operation.data}
+      slskdAutoImport={slskd.data?.auto_import === true}
       loadFailure={
         operation.isError ? importLoadFailure(operation.error) : null
       }

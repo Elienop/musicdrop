@@ -144,17 +144,17 @@ def test_incremental_false_yields_no_advisory() -> None:
 def test_every_advisory_names_the_cli_escape_hatch() -> None:
     """None of these keys is globally inert — it is beets' own config file.
 
-    This is also the reason ``link``/``hardlink``/``reflink`` and an all-off
-    (in-place) config get no rule: the shape of every rule here is "MusicDrop
-    overrides this, the CLI still honours it", and those are either honoured by
-    the app or are beets' own behaviour with nothing to escape to.
+    This is also the reason ``link``/``reflink`` and an all-off (in-place)
+    config get no rule: the shape of every rule here is "MusicDrop overrides
+    this, the CLI still honours it", and those are either honoured by every
+    import or are beets' own behaviour with nothing to escape to.
     """
     advisories = _advise(
         "import:\n  autotag: no\n  duplicate_action: skip\n  singletons: yes\n"
         "  incremental: yes\n  delete: yes\n  link: yes\n  hardlink: yes\n"
         "  reflink: auto\n"
     )
-    assert len(advisories) == 8
+    assert len(advisories) == 6
     for advisory in advisories:
         assert "beet import" in advisory.message, advisory.key
 
@@ -174,7 +174,7 @@ def test_every_advisory_stays_short() -> None:
         "  incremental: yes\n  delete: yes\n  link: yes\n  hardlink: yes\n"
         "  reflink: auto\n"
     )
-    assert len(advisories) == 8
+    assert len(advisories) == 6
     for advisory in advisories:
         assert len(advisory.message) <= 360, f"{advisory.key}: {len(advisory.message)} chars"
 
@@ -191,9 +191,7 @@ def test_every_rule_fires_together_in_a_stable_order() -> None:
         "import.singletons",
         "import.incremental",
         "import.delete",
-        "import.link",
         "import.hardlink",
-        "import.reflink",
     ]
 
 
@@ -351,43 +349,30 @@ def test_a_quoted_boolean_gets_no_advisory_because_beets_reads_it_as_true() -> N
         ImportSection(reflink="yes")  # type: ignore[arg-type]  # the point is the refusal
 
 
-def test_a_filing_flag_advisory_says_where_it_applies_not_that_it_is_ignored() -> None:
-    """The quieter half of the `delete` surprise, and it lands on exactly the
-    user the keep-downloads work exists for.
-
-    `hardlink`/`link`/`reflink` ARE honoured on a manual import, a sweep and a
-    bank apply — verified on disk. They are overridden by the inbox routes,
-    which send `operation="move"`, and by Trash restore, whose TWO arms each
-    pick their own operation: the ordinary re-import sends `move=True`
-    (`trash_manage.restore_album`, the arm every album Delete reaches) and the
-    move-back sends `in_place=True` (`trash_manage._restore_to_origin`), its
-    folder being already at the destination. So the sentence says Trash restore
-    sets the operation itself — "imports in place" was true of the rarer arm
-    only (code seat F2). Someone who sets `hardlink: yes` because they seed
-    their downloads gets a move out of the inbox when they click Import on an
-    inbox row, and nothing told them. The message names both halves rather than
-    claiming the flag is ignored.
+def test_a_filing_flag_every_import_honours_has_no_advisory() -> None:
+    """Since slskd's imports follow beets' config too (decisions #77), every
+    import honours `link`, `hardlink` and `reflink`: nothing overrides them, so
+    "Inbox imports move" would now be false. Trash restore names its own
+    operation, but for a restore, not an import.
     """
-    for key in ("link", "hardlink"):
-        (advisory,) = _advise(f"import:\n  {key}: yes\n")
-        assert advisory.key == f"import.{key}"
-        assert f"import.{key}" in advisory.message  # names the setting they typed
-        assert "manual import" in advisory.message  # ...where it DOES apply
-        # ...and where it does not, each named for what it really does
-        assert "Inbox imports move" in advisory.message
-        assert "Trash restore sets the file operation itself" in advisory.message
+    assert _advise("import:\n  link: yes\n") == []
+    # reflink's own real value is set, and still not overridden
+    assert _advise("import:\n  reflink: auto\n") == []
 
-    # reflink's own real value counts as set
-    (advisory,) = _advise("import:\n  reflink: auto\n")
-    assert advisory.key == "import.reflink"
-    assert "import history" not in advisory.message
 
-    # Only a hardlink forces beets' history on, and `incremental: no` beside it
-    # fires no rule of its own — so the hardlink advisory is where it is said.
+def test_the_hardlink_advisory_is_only_the_history_it_forces() -> None:
+    """What a hardlink still changes in the app: a manual hardlink run turns
+    beets' import history on (``run_import_worker``), and `incremental: no`
+    beside it fires no rule of its own, so the hardlink advisory is where it is
+    said, and all it says."""
     (hardlink,) = _advise("import:\n  hardlink: yes\n  incremental: no\n")
-    assert "import history" in hardlink.message
-    (link,) = _advise("import:\n  link: yes\n")
-    assert "import history" not in link.message
+    assert hardlink.key == "import.hardlink"
+    assert hardlink.message.startswith(
+        "A manual hardlink import turns beets' import history on, so a kept folder"
+        " added again is skipped."
+    )
+    assert "Inbox" not in hardlink.message
+    assert "Trash restore" not in hardlink.message
 
     # and an explicit off is not an opinion to contradict
     assert _advise("import:\n  hardlink: no\n") == []

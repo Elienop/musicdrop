@@ -22,6 +22,28 @@ const NOTE: Partial<Record<FileOperation, string>> = {
   in_place: "Your config imports in place. This switch sets hardlink or move.",
 };
 
+/** Added to the note while slskd's auto-import is on, for the two operations
+ * whose album is the download itself: a symlink points at it, and an in-place
+ * import files it where it sits. Copy, hardlink and reflink keep their own
+ * file, so deleting the download leaves the album whole. */
+const SLSKD_NOTE = "Deleting a download in slskd breaks its album.";
+const ALBUM_IS_THE_DOWNLOAD: ReadonlySet<FileOperation> = new Set<FileOperation>([
+  "link",
+  "in_place",
+]);
+
+/** The note for `operation`, with the slskd sentence when it applies. */
+function noteFor(
+  operation: FileOperation,
+  slskdAutoImport: boolean,
+): string | undefined {
+  const note = NOTE[operation];
+  if (note === undefined) return undefined;
+  return slskdAutoImport && ALBUM_IS_THE_DOWNLOAD.has(operation)
+    ? `${note} ${SLSKD_NOTE}`
+    : note;
+}
+
 /** What the page knows that decides whether the switch can be used now. */
 export interface ImportSwitchGate {
   /** A flip or an Apply is reloading beets; the page's own line says so. */
@@ -118,6 +140,7 @@ export function importSwitchFailure(err: ConfigOpError | Error): string {
  */
 export function ImportOperationSection({
   operation,
+  slskdAutoImport,
   loadFailure,
   ready,
   checked,
@@ -128,6 +151,9 @@ export function ImportOperationSection({
 }: Readonly<{
   /** What imports use now, once read. */
   operation: FileOperation | undefined;
+  /** slskd's saved auto-import setting: the link and in-place notes then say
+   * what deleting a download in slskd does. False while it is unread. */
+  slskdAutoImport: boolean;
   /** Why the setting can't be read ({@link importLoadFailure}), or null. */
   loadFailure: string | null;
   /** Both the operation and the config snapshot have answered. */
@@ -149,7 +175,10 @@ export function ImportOperationSection({
   }
 
   const reasonLine = failure === null ? reason : null;
-  const note = reasonLine === null && operation ? NOTE[operation] : undefined;
+  const note =
+    reasonLine === null && operation
+      ? noteFor(operation, slskdAutoImport)
+      : undefined;
   const describedBy = [
     HELP_ID,
     reasonLine === null ? null : REASON_ID,

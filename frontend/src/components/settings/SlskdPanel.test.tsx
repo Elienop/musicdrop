@@ -1,7 +1,7 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { SlskdPanel } from "@/components/settings/SlskdPanel";
 import { renderWithProviders } from "@/test/render";
@@ -33,6 +33,10 @@ function stubSecureContext() {
 
 const SETTINGS = `${window.location.origin}/api/slskd/settings`;
 const TEST_URL = `${window.location.origin}/api/slskd/test`;
+const IMPORT_OP_URL = `${window.location.origin}/api/config/import-operation`;
+/** The auto-import switch's help, as the switch reads it. */
+const AUTO_IMPORT_HELP =
+  "when on, a finished slskd download imports itself into the library; uncertain matches are set aside for review";
 /** Path in slskd's help, named by slskd.yml's own key. */
 const HELP = "slskd’s download folder (directories.downloads), as slskd sees it.";
 
@@ -48,10 +52,18 @@ function settings(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// The card's files line reads the operation beets loaded: `move` unless a
+// test registers its own.
+beforeEach(() => {
+  server.use(
+    http.get(IMPORT_OP_URL, () => HttpResponse.json({ operation: "move" })),
+  );
+});
+
 describe("SlskdPanel", () => {
   // The panel is settings-only now (the set-aside/review surface moved to the
-  // Review page), so the only request it makes is GET /api/slskd/settings —
-  // each test registers it.
+  // Review page). It reads GET /api/slskd/settings, which each test registers,
+  // and the import operation, which the beforeEach above answers.
 
   test("renders a real h2 heading (not a CardTitle div)", async () => {
     server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
@@ -268,5 +280,69 @@ describe("SlskdPanel", () => {
 
     const link = await screen.findByRole("link", { name: /review/i });
     expect(link).toHaveAttribute("href", "/review");
+  });
+});
+
+describe("SlskdPanel: what an import does with the files", () => {
+  const autoImport = () =>
+    screen.getByRole("switch", { name: "Auto-import completed downloads" });
+
+  test.each<[string, string]>([
+    ["move", "Files move into your library."],
+    ["hardlink", "Files stay, hardlinked into your library."],
+    ["copy", "Files stay, copied into your library."],
+    ["link", "Files stay, symlinked into your library."],
+    ["reflink", "Files stay, cloned into your library."],
+    ["reflink_auto", "Files stay, cloned into your library."],
+    ["in_place", "Files stay where they are."],
+  ])("%s: the line under auto-import, read with it", async (op, line) => {
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings())),
+      http.get(IMPORT_OP_URL, () => HttpResponse.json({ operation: op })),
+    );
+    renderWithProviders(<SlskdPanel />);
+    const change = await screen.findByRole("link", { name: "Change" });
+    expect(change).toHaveAttribute("href", "/settings/beets");
+    expect(change.closest("p")?.textContent).toBe(`${line} Change`);
+    // The switch is described by its help and the sentence, not the link's word.
+    expect(autoImport()).toHaveAccessibleDescription(
+      `${AUTO_IMPORT_HELP} ${line}`,
+    );
+  });
+
+  test("no line while the setting loads", async () => {
+    let reads = 0;
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings())),
+      http.get(IMPORT_OP_URL, () => {
+        reads += 1;
+        return new Promise<Response>(() => {});
+      }),
+    );
+    renderWithProviders(<SlskdPanel />);
+    await screen.findByLabelText("Path in slskd");
+    await waitFor(() => expect(reads).toBe(1));
+    expect(screen.queryByRole("link", { name: "Change" })).toBeNull();
+    expect(screen.queryByText(/^Files /)).toBeNull();
+    expect(autoImport()).toHaveAccessibleDescription(AUTO_IMPORT_HELP);
+  });
+
+  test("no line when the setting can't be read", async () => {
+    let reads = 0;
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings())),
+      http.get(IMPORT_OP_URL, () => {
+        reads += 1;
+        return HttpResponse.json({ detail: "boom" }, { status: 500 });
+      }),
+    );
+    renderWithProviders(<SlskdPanel />);
+    await screen.findByLabelText("Path in slskd");
+    await waitFor(() => expect(reads).toBeGreaterThan(0));
+    // Let the failed read settle before looking for the line.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole("link", { name: "Change" })).toBeNull();
+    expect(screen.queryByText(/^Files /)).toBeNull();
+    expect(autoImport()).toHaveAccessibleDescription(AUTO_IMPORT_HELP);
   });
 });

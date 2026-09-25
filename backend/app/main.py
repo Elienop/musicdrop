@@ -329,12 +329,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # while the import slot / backfills / the swap lock are busy (it consumes the
     # existing gate; it is not a new mutex participant). Built before the ``try``
     # so it is in scope for the ``finally`` teardown.
-    from app.acquisition.inbox import resolve_inbox_dir
+    from app.acquisition.inbox import record_imported, resolve_inbox_dir
     from app.acquisition.ledger import AcquisitionLedger
     from app.acquisition.queue import AcquisitionQueue
 
     inbox_dir = resolve_inbox_dir(settings, handle)
     ledger = AcquisitionLedger(inbox_dir / ".musicdrop-ledger.json")
+    # Every finished run that landed a folder inside slskd's folder records it,
+    # whoever started it (decisions #77), so "Not imported yet" hides it.
+    import_registry.attach_import_recorder(
+        lambda folders: record_imported(ledger, inbox_dir, folders)
+    )
     acquisition_queue = AcquisitionQueue(
         import_registry=import_registry,
         ledger=ledger,

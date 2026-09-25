@@ -47,9 +47,10 @@ from app.models.import_models import (
 T = TypeVar("T")
 
 _TERMINAL = (ImportPhase.done, ImportPhase.failed)
-# beets' ``-I`` rides along: a re-download lands in the same folder, and history
-# keys on the folder path alone (decisions #76).
-_INBOX_OPTS = ImportOptions(operation="move", unattended=True, incremental=False)
+# beets' own file operation (decisions #77) and ``-I`` ride along: a re-download
+# lands in the same folder, and history keys on the folder path alone
+# (decisions #76).
+_INBOX_OPTS = ImportOptions(operation="default", unattended=True, incremental=False)
 
 
 def _poll(

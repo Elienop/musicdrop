@@ -88,7 +88,22 @@ const ACTIVE_IMPORT_URL = `${window.location.origin}/api/imports/active`;
 const REORGANIZE_STATUS_URL = `${window.location.origin}/api/reorganize/status`;
 const DISK_SYNC_STATUS_URL = `${window.location.origin}/api/disk-sync/status`;
 const IMPORT_OP_URL = `${window.location.origin}/api/config/import-operation`;
+const SLSKD_SETTINGS_URL = `${window.location.origin}/api/slskd/settings`;
 type FileOperation = components["schemas"]["ImportOperation"]["operation"];
+
+/** slskd's saved settings; only `auto_import` matters to this page. */
+function slskdSettingsFixture(
+  autoImport: boolean,
+): components["schemas"]["SlskdSettings"] {
+  return {
+    base_url: "",
+    downloads_prefix: "",
+    auto_import: autoImport,
+    has_token: false,
+    has_webhook_secret: false,
+    last_download_missed: false,
+  };
+}
 
 /** Idle reorganize job — shape mirrors useReorganizeStatus's fallback. */
 function idleReorganizeStatus() {
@@ -139,6 +154,11 @@ beforeEach(() => {
     // The Import section above the editor reads this on every render of the
     // page; `move` shows no note, so the older tests see what they saw.
     http.get(IMPORT_OP_URL, () => HttpResponse.json({ operation: "move" })),
+    // So does the slskd sentence on the link and in-place notes, which shows
+    // only while slskd's auto-import is on; off here.
+    http.get(SLSKD_SETTINGS_URL, () =>
+      HttpResponse.json(slskdSettingsFixture(false)),
+    ),
   );
 });
 
@@ -2467,9 +2487,82 @@ describe("SettingsBeetsPage Import: Keep downloads", () => {
     await waitFor(() =>
       expect(described(sw)).toEqual(note === null ? [HELP] : [HELP, note]),
     );
-    // After S6 slskd downloads follow the config, so no line may say they move.
+    // slskd downloads follow the config, so no line may say they move; with
+    // auto-import off (the beforeEach) no line names slskd at all.
     expect(importSection().textContent).not.toMatch(/slskd/i);
   });
+
+  const SLSKD_SENTENCE = "Deleting a download in slskd breaks its album.";
+
+  /** Wait until slskd's settings have been read (or failed) and the page has
+   * rendered the answer, so an assertion that the sentence is ABSENT is not
+   * made before the read that could add it. */
+  async function slskdSettled(queryClient: QueryClient) {
+    await waitFor(() =>
+      expect(["success", "error"]).toContain(
+        queryClient.getQueryState(["slskd", "settings"])?.status,
+      ),
+    );
+    // TanStack hands the result to the page on a 0 ms timer.
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  test.each<[FileOperation, string | null]>([
+    ["move", null],
+    ["hardlink", null],
+    ["copy", "Your config copies. This switch sets hardlink or move."],
+    [
+      "link",
+      `Your config symlinks. This switch sets hardlink or move. ${SLSKD_SENTENCE}`,
+    ],
+    ["reflink", "Your config clones. This switch sets hardlink or move."],
+    ["reflink_auto", "Your config clones. This switch sets hardlink or move."],
+    [
+      "in_place",
+      `Your config imports in place. This switch sets hardlink or move. ${SLSKD_SENTENCE}`,
+    ],
+  ])(
+    "with slskd's auto-import on, the note for %s",
+    async (op, note) => {
+      defaultMocks(snapshotFixture(), false, op);
+      server.use(
+        http.get(SLSKD_SETTINGS_URL, () =>
+          HttpResponse.json(slskdSettingsFixture(true)),
+        ),
+      );
+      const { queryClient } = renderPage();
+      const sw = await findSwitch();
+      await slskdSettled(queryClient);
+      expect(described(sw)).toEqual(note === null ? [HELP] : [HELP, note]);
+    },
+  );
+
+  const LINK_NOTE = "Your config symlinks. This switch sets hardlink or move.";
+  const IN_PLACE_NOTE =
+    "Your config imports in place. This switch sets hardlink or move.";
+  const slskdOff = () => HttpResponse.json(slskdSettingsFixture(false));
+
+  test.each<[string, FileOperation, string, () => Response]>([
+    ["off", "link", LINK_NOTE, slskdOff],
+    ["off", "in_place", IN_PLACE_NOTE, slskdOff],
+    [
+      "unreadable",
+      "link",
+      LINK_NOTE,
+      () => HttpResponse.json({ detail: "boom" }, { status: 500 }),
+    ],
+  ])(
+    "with slskd's auto-import %s, the %s note leaves slskd out",
+    async (_state, op, note, reply) => {
+      defaultMocks(snapshotFixture(), false, op);
+      server.use(http.get(SLSKD_SETTINGS_URL, reply));
+      const { queryClient } = renderPage();
+      const sw = await findSwitch();
+      await slskdSettled(queryClient);
+      expect(described(sw)).toEqual([HELP, note]);
+      expect(importSection().textContent).not.toMatch(/slskd/i);
+    },
+  );
 
   test("while the setting loads, the switch's place is a skeleton, never an unchecked switch", async () => {
     defaultMocks();

@@ -35,7 +35,7 @@ from beets.importer.actions import DuplicateAction as BeetsDuplicateAction
 # and must not import beets itself (CLAUDE.md rule 3).
 from beets.importer.session import ImportAbortError as ImportAbortError
 from beets.importer.session import ImportSession
-from beets.util import FilesystemError
+from beets.util import FilesystemError, normpath
 
 from app.bank import store as bank_store
 from app.bank.fingerprint import folder_fingerprint
@@ -2238,7 +2238,7 @@ def _history_flags(
     ``forced`` resolves to — a run that HARDLINKS leaves the download in place,
     so history is what stops the same folder meeting the album a second time,
     with ``incremental_skip_later`` on so a SKIPped album is offered again.
-    Anything else (an inbox move, in_place, a ``link``/``reflink``/``copy``
+    Anything else (a move, in_place, a ``link``/``reflink``/``copy``
     config) leaves the history keys to the user.
 
     All four pin ``resume: False``: where history is ON that repeats what beets
@@ -2305,6 +2305,19 @@ def is_cross_device_hardlink(exc: FilesystemError) -> bool:
     return exc.verb == "link" and isinstance(cause, OSError) and cause.errno == errno.EXDEV
 
 
+def album_folder_under_source(folder: str, source: str) -> bool:
+    """Whether a feed row's ``folder`` is ``source`` or inside it, by whole names.
+
+    ``source`` is a path an import was started with, spelled as the caller
+    passed it; the session holds it through beets' own ``normpath``
+    (``importer/session.py:79``), and every feed folder is derived from those
+    (``WebImportSession._task_folder``), so ``source`` is normalised the same
+    way before the compare. A trailing slash on a typed path still matches.
+    """
+    top = os.fsdecode(normpath(os.fsencode(source)))
+    return folder == top or folder.startswith(top + os.sep)
+
+
 def run_import_worker(
     session: WebImportSession,
     *,
@@ -2349,7 +2362,7 @@ def run_import_worker(
     ``move`` scopes the file operation to this one run: ``True`` forces a move
     (``copy=False``), ``False`` forces a copy (``move=False``). Because
     ``config["import"]`` is a process-global confuse singleton, the prior
-    move/copy values are snapshotted and restored in a ``finally`` so an inbox
+    move/copy values are snapshotted and restored in a ``finally`` so a forced
     move never leaks into the next manual import. ``None`` touches nothing — the
     manual-import default falls through to the user's beets config untouched.
 
@@ -2523,8 +2536,9 @@ def run_import_worker(
         config.set({"threaded": False, "import": forced})
         try:
             # The record of what beets did to the user's files, and the signal
-            # that an inbox import overrode their ``hardlink: yes`` (a
-            # per-request override no config advisory can carry). On
+            # that a request overrode their file operation (an explicit move or
+            # copy, Trash restore: a per-request override no config advisory
+            # can carry). On
             # ``uvicorn.error`` because an app-namespace INFO record emitted
             # nothing in the shipped container (see ``operator_logger``). Read
             # after the force, so it reports what beets will resolve.

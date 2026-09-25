@@ -215,7 +215,7 @@ async def _map_to_inbox(local_dir: str, downloads_prefix: str, inbox_dir: Path) 
         )
         return None
     # ``strict=True`` also rejects the inbox ROOT (the reported folder IS Path in
-    # slskd, or "/" with it empty): a whole-inbox MOVE would sweep in unrelated
+    # slskd, or "/" with it empty): a whole-inbox import would sweep in unrelated
     # and still-downloading siblings (and the ledger); only a strict descendant is
     # an album. contain (resolve + lstat), coalesce_album_root (parent.iterdir)
     # and enqueue (resolve + ledger stat) all do blocking filesystem I/O, so they

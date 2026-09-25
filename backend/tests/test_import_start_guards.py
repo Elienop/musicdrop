@@ -1303,9 +1303,14 @@ def test_review_all_survives_a_folder_that_vanished_since_the_listing(
     """
     _canned_lookup(monkeypatch)
     _reg, lib = _real_registry(tmp_path)
+    # A config that keeps downloads: Review all follows beets' own file
+    # operation (decisions #77), so the folder that imported keeps its files.
+    config["import"]["copy"] = True
+    config["import"]["move"] = False
     inbox = tmp_path / "inbox"
     gone = _album_folder(inbox, b"gone")
     stays = _album_folder(inbox, b"stays")
+    tracks = sorted(p.name for p in stays.iterdir())
 
     def settle_then_vanish(*args: Any, **kwargs: Any) -> list[Path]:
         """Both folders are settled; one is removed in the window before start."""
@@ -1326,7 +1331,7 @@ def test_review_all_survives_a_folder_that_vanished_since_the_listing(
     assert state["phase"] == "done", state
     assert not gone.exists()
     assert len(list(lib.albums())) == 1
-    assert not stays.exists() or sorted(p.name for p in stays.iterdir()) == []
+    assert sorted(p.name for p in stays.iterdir()) == tracks
 
 
 @pytest.mark.usefixtures("inbox_bank_dir")

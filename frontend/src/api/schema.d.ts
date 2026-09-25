@@ -1762,12 +1762,12 @@ export interface paths {
         put?: never;
         /**
          * Review Inbox
-         * @description Start an attended, move-mode import of the SETTLED inbox folders.
+         * @description Start an attended import of the SETTLED inbox folders, with beets' file operation.
          *
          *     One-click review of the set-aside backlog from the slskd panel: no path is
          *     typed and the absolute inbox path never leaves the server. Strong matches
-         *     auto-apply (and move out of the inbox); uncertain ones park for review in the
-         *     normal candidate-review screen. Nothing to import is a no-op
+         *     auto-apply; uncertain ones park for review in the normal candidate-review
+         *     screen. Nothing to import is a no-op
          *     (``started=False``), never an error — and the shared import-slot gate refuses
          *     (409) while another beets mutation or backfill owns the slot.
          *
@@ -1820,7 +1820,7 @@ export interface paths {
         put?: never;
         /**
          * Import Inbox Item
-         * @description Attended move-import of ONE inbox folder (the per-item Review action).
+         * @description Attended import of ONE inbox folder, the per-item Review, with beets' file operation.
          *
          *     Takes the folder ``name`` (not a path) and re-roots it under the inbox, so a
          *     client value cannot escape: ``contain(strict=True)`` rejects ``../``, absolute

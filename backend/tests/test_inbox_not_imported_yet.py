@@ -178,10 +178,10 @@ def test_the_list_the_badge_and_review_all_agree(tmp_path: Path, inbox_bank_dir:
 
     held = inbox_mod.bank_held_names(inbox, inbox_bank_dir)
     listed = [item.name for item in list_inbox(inbox, None, held=held)]
-    settled = settled_folders(inbox, held=held, settle_seconds=60, now=time.time())
+    settled = settled_folders(inbox, None, held=held, settle_seconds=60, now=time.time())
 
     assert sorted(listed) == ["Artist", "Ignored", "Plain"]
-    assert count_pending(inbox, held=held) == len(listed)
+    assert count_pending(inbox, None, held=held) == len(listed)
     assert {folder.name for folder in settled} <= set(listed)
 
 

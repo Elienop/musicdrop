@@ -7,10 +7,10 @@ Option A). Under the lifespan-less test client there is no queue on
 
 ``POST /acquisition/review-inbox`` is the slskd-panel one-click review: it
 resolves the fixed inbox path SERVER-SIDE (never sent to the browser) and starts
-a normal *attended* import with ``operation="move"`` so applied albums leave the
-inbox — targeting the SETTLED top-level folders, never the inbox root (which is
-the downloader's live output dir). Nothing settled is a no-op (``started=False``),
-never an error.
+a normal *attended* import with ``operation="default"``, the file operation
+beets' config resolves to (decisions #77) — targeting the SETTLED top-level
+folders, never the inbox root (which is the downloader's live output dir).
+Nothing settled is a no-op (``started=False``), never an error.
 """
 
 from __future__ import annotations
@@ -121,6 +121,15 @@ async def _held_names(inbox_dir: Path) -> frozenset[str]:
     return await inbox_read(partial(bank_held_names, inbox_dir, get_bank_dir()))
 
 
+def _ledger(request: Request) -> AcquisitionLedger | None:
+    """The lifespan's acquisition ledger, whose ``imported`` rows hide a folder.
+
+    ``None`` under the lifespan-less test client: nothing is hidden then.
+    """
+    ledger: AcquisitionLedger | None = getattr(request.app.state, "acquisition_ledger", None)
+    return ledger
+
+
 #: The batch route's own refusal copy, for the case it can actually reach: this
 #: route hands over folders the browser is never shown, and only refuses when
 #: EVERY one of them vanished. An unreadable batch keeps the shared singular -
@@ -177,8 +186,9 @@ def _start_inbox_item(reg: ImportJobRegistry, inbox_dir: Path, name: str) -> str
         return None
     return reg.start(
         str(contained),
-        # beets' ``-I``: see the drain (``AcquisitionQueue._process_one``).
-        options=ImportOptions(operation="move", incremental=False),
+        # beets' own file operation and ``-I``: see the drain
+        # (``AcquisitionQueue._process_one``).
+        options=ImportOptions(operation="default", incremental=False),
         origin="inbox",
     )
 
@@ -218,7 +228,9 @@ async def get_acquisition_status(request: Request) -> AcquisitionQueueStatus:
     inbox_pending = 0
     if inbox_dir is not None:
         held = await _held_names(inbox_dir)
-        inbox_pending = await inbox_read(partial(count_pending, inbox_dir, held=held))
+        inbox_pending = await inbox_read(
+            partial(count_pending, inbox_dir, _ledger(request), held=held)
+        )
     queue = getattr(request.app.state, "acquisition_queue", None)
     if queue is None:
         return AcquisitionQueueStatus(
@@ -261,12 +273,12 @@ async def review_inbox(
     request: Request,
     reg: Annotated[ImportJobRegistry, Depends(get_registry)],
 ) -> ReviewInboxResponse:
-    """Start an attended, move-mode import of the SETTLED inbox folders.
+    """Start an attended import of the SETTLED inbox folders, with beets' file operation.
 
     One-click review of the set-aside backlog from the slskd panel: no path is
     typed and the absolute inbox path never leaves the server. Strong matches
-    auto-apply (and move out of the inbox); uncertain ones park for review in the
-    normal candidate-review screen. Nothing to import is a no-op
+    auto-apply; uncertain ones park for review in the normal candidate-review
+    screen. Nothing to import is a no-op
     (``started=False``), never an error — and the shared import-slot gate refuses
     (409) while another beets mutation or backfill owns the slot.
 
@@ -284,19 +296,22 @@ async def review_inbox(
     app_settings = getattr(request.app.state, "settings", None) or settings
     settle = float(getattr(app_settings, "inbox_settle_seconds", 60))
     held = await _held_names(inbox_dir)
+    ledger = _ledger(request)
     folders = await inbox_read(
-        partial(settled_folders, inbox_dir, held=held, settle_seconds=settle, now=time.time())
+        partial(
+            settled_folders, inbox_dir, ledger, held=held, settle_seconds=settle, now=time.time()
+        )
     )
     if not folders:
         # Nothing to review right now — but distinguish WHY. An empty inbox is
         # "all done"; folders still receiving files are "not yet", and the caller
         # must not tell the user the inbox cleared while their rows are on screen.
-        total = await inbox_read(partial(count_pending, inbox_dir, held=held))
+        total = await inbox_read(partial(count_pending, inbox_dir, ledger, held=held))
         return ReviewInboxResponse(started=False, job_id=None, pending=0, in_flight=total)
     pending = len(folders)
     # Any listed item we did not hand over is still arriving; report it so the UI
     # can say so rather than implying the backlog is now empty.
-    total = await inbox_read(partial(count_pending, inbox_dir, held=held))
+    total = await inbox_read(partial(count_pending, inbox_dir, ledger, held=held))
     in_flight = max(0, total - pending)
     try:
         # Off the loop: ``start`` -> ``validate`` stats each handed-over folder,
@@ -320,7 +335,7 @@ async def review_inbox(
             partial(
                 reg.start,
                 [str(folder) for folder in folders],
-                options=ImportOptions(operation="move", incremental=False),
+                options=ImportOptions(operation="default", incremental=False),
                 origin="inbox",
             )
         )
@@ -353,7 +368,7 @@ async def list_inbox_items(request: Request) -> InboxListing:
     inbox_dir = getattr(request.app.state, "inbox_dir", None)
     if inbox_dir is None:
         return InboxListing(items=[])
-    ledger: AcquisitionLedger | None = getattr(request.app.state, "acquisition_ledger", None)
+    ledger = _ledger(request)
     app_settings = getattr(request.app.state, "settings", None) or settings
     settle = float(getattr(app_settings, "inbox_settle_seconds", 60))
     # Same window "Review all" uses, so a row's in_flight cue agrees with whether
@@ -400,7 +415,7 @@ async def import_inbox_item(
     request: Request,
     reg: Annotated[ImportJobRegistry, Depends(get_registry)],
 ) -> ReviewInboxResponse:
-    """Attended move-import of ONE inbox folder (the per-item Review action).
+    """Attended import of ONE inbox folder, the per-item Review, with beets' file operation.
 
     Takes the folder ``name`` (not a path) and re-roots it under the inbox, so a
     client value cannot escape: ``contain(strict=True)`` rejects ``../``, absolute

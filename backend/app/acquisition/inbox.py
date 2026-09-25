@@ -13,9 +13,13 @@ outside is rejected too — the resolved target is no longer under the inbox.
 
 ``_not_imported_yet`` is the ONE "Not imported yet" rule (a top-level
 non-hidden, non-symlinked dir holding audio that no row in "Waiting for review"
-holds), shared by the count (``count_pending``, the status route's
-``inbox_pending``), the Review listing (``list_inbox``) and Review all
-(``settled_folders``).
+holds and that MusicDrop has not imported unchanged since), shared by the count
+(``count_pending``, the status route's ``inbox_pending``), the Review listing
+(``list_inbox``) and Review all (``settled_folders``).
+
+``record_imported`` is the other half of the last clause: every import that
+lands every album of a folder inside slskd's folder records it in the ledger
+(decisions #77, remember and hide).
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 from app.acquisition.ledger import AcquisitionLedger
@@ -67,7 +72,7 @@ def contain(path: str, inbox_dir: Path, *, strict: bool = False) -> Path | None:
     escape as an unhandled 500.
 
     With ``strict=True`` the inbox ROOT itself is ALSO rejected (only a strict
-    descendant passes). A MOVE-import target must be strict: importing the inbox
+    descendant passes). An import target must be strict: importing the inbox
     root would sweep in every unrelated/still-downloading sibling and the ledger.
     """
     try:
@@ -80,6 +85,22 @@ def contain(path: str, inbox_dir: Path, *, strict: bool = False) -> Path | None:
     if resolved == root and not strict:
         return resolved
     return None
+
+
+def record_imported(ledger: AcquisitionLedger, inbox_dir: Path, folders: list[str]) -> None:
+    """Record each of ``folders`` strictly inside slskd's folder as ``imported``.
+
+    The import registry's recorder (attached at lifespan): it hands over the
+    folders a finished run fully landed, whoever started it, and only the ones
+    ``contain(strict=True)`` admits are kept. Each is keyed on its resolved path,
+    which is how the list spells an entry, with its identity at this moment, so
+    ``_not_imported_yet`` hides it until an entry is added, removed or renamed
+    in it. ``mark`` raises ``OSError`` when the ledger cannot be written.
+    """
+    for folder in folders:
+        contained = contain(folder, inbox_dir, strict=True)
+        if contained is not None:
+            ledger.mark(contained, outcome="imported")
 
 
 def coalesce_album_root(folder: Path, inbox_dir: Path) -> Path:
@@ -179,31 +200,77 @@ def _entry_is_inbox_item(entry: os.DirEntry[str]) -> bool:
     return entry.is_dir(follow_symlinks=False)
 
 
-def _not_imported_yet(entry: os.DirEntry[str], held: frozenset[str]) -> bool:
+def _imported_identities(ledger: AcquisitionLedger | None) -> Mapping[str, tuple[float, int]]:
+    """Each ``imported`` ledger row's path -> the identity it was recorded with.
+
+    Only ``imported``: a ``set_aside`` or ``failed`` drop is still sitting there
+    and must stay reviewable (``settled_folders``), so those rows only annotate.
+    """
+    if ledger is None:
+        return {}
+    return {
+        row.path: (row.mtime, row.size) for row in ledger.entries() if row.outcome == "imported"
+    }
+
+
+def _imported_unchanged(entry: os.DirEntry[str], imported: Mapping[str, tuple[float, int]]) -> bool:
+    """Whether the ledger records ``entry`` itself as imported, unchanged since.
+
+    The entry's own path, spelled as the list spells it (the resolved inbox plus
+    the name), so a record for ``X/CD1`` or ``X 2`` never hides ``X``. One stat,
+    and only for a path with a record; ``DirEntry`` caches it, so the list's own
+    stat of the same entry costs nothing more. A folder that cannot be stat'ed
+    stays listed.
+    """
+    recorded = imported.get(entry.path)
+    if recorded is None:
+        return False
+    try:
+        st = entry.stat()
+    except OSError:
+        return False
+    return (st.st_mtime, st.st_size) == recorded
+
+
+def _not_imported_yet(
+    entry: os.DirEntry[str],
+    held: frozenset[str],
+    imported: Mapping[str, tuple[float, int]],
+) -> bool:
     """THE rule for one "Not imported yet" entry, shared by the list, the count
     and Review all so the three can never disagree.
 
     A plain top-level dir holding audio that no row in "Waiting for review"
     holds (``held``, from ``bank_held_names``): that row is where its album is
-    decided. An empty leftover dir or a loose file is never an entry.
+    decided. An empty leftover dir or a loose file is never an entry. Nor is a
+    folder MusicDrop imported and nobody has added, removed or renamed a file
+    in since (``imported``, from ``_imported_identities``), checked before the
+    audio walk so a hidden folder costs one stat.
     """
     if not _entry_is_inbox_item(entry) or entry.name in held:
+        return False
+    if _imported_unchanged(entry, imported):
         return False
     return has_audio(Path(entry.path))
 
 
-def _not_imported_entries(inbox_dir: Path, held: frozenset[str]) -> list[os.DirEntry[str]]:
+def _not_imported_entries(
+    inbox_dir: Path, ledger: AcquisitionLedger | None, held: frozenset[str]
+) -> list[os.DirEntry[str]]:
     """Every inbox entry ``_not_imported_yet`` keeps; empty on an OS error."""
     try:
         entries = list(os.scandir(inbox_dir))
     except OSError:
         return []
-    return [entry for entry in entries if _not_imported_yet(entry, held)]
+    imported = _imported_identities(ledger)
+    return [entry for entry in entries if _not_imported_yet(entry, held, imported)]
 
 
-def count_pending(inbox_dir: Path, *, held: frozenset[str]) -> int:
+def count_pending(
+    inbox_dir: Path, ledger: AcquisitionLedger | None, *, held: frozenset[str]
+) -> int:
     """How many entries "Not imported yet" lists: the status route's ``inbox_pending``."""
-    return len(_not_imported_entries(inbox_dir, held))
+    return len(_not_imported_entries(inbox_dir, ledger, held))
 
 
 def _max_mtime(current: float | None, candidate: float) -> float:
@@ -246,19 +313,25 @@ def _newest_mtime(folder: Path) -> float | None:
 
 
 def settled_folders(
-    inbox_dir: Path, *, held: frozenset[str], settle_seconds: float, now: float
+    inbox_dir: Path,
+    ledger: AcquisitionLedger | None,
+    *,
+    held: frozenset[str],
+    settle_seconds: float,
+    now: float,
 ) -> list[Path]:
     """The "Not imported yet" entries that have been QUIET for ``settle_seconds``.
 
     What Review all hands over: the listed entries minus the ones still
-    receiving files. Ledger-seen folders stay eligible: a failed or set-aside
-    drop is still sitting there and must remain reviewable.
+    receiving files. Only an unchanged ``imported`` record keeps a folder out:
+    a failed or set-aside drop is still sitting there and must remain
+    reviewable.
 
     Skipping is always the safe direction — a folder we cannot stat, or one that
     vanishes mid-walk, is treated as in-flight rather than swept into an import.
     """
     settled: list[Path] = []
-    for entry in _not_imported_entries(inbox_dir, held):
+    for entry in _not_imported_entries(inbox_dir, ledger, held):
         folder = Path(entry.path)
         newest = _newest_mtime(folder)
         if newest is None:
@@ -336,16 +409,17 @@ def list_inbox(
     settle_seconds: float = 0.0,
     now: float | None = None,
 ) -> list[InboxItem]:
-    """The "Not imported yet" entries, ledger-annotated (never filtered by it).
+    """The "Not imported yet" entries, ledger-annotated.
 
-    A set-aside item IS in the ledger, so the ledger only ANNOTATES
-    (``set_aside``/``failed``) — it never removes a row. The ledger keys the
-    (possibly deeper) album path the webhook coalesced, so a row is annotated
-    when a ledger entry sits at or under it.
+    A set-aside item IS in the ledger, so ``set_aside``/``failed`` rows only
+    ANNOTATE — they never remove a row. The ledger keys the (possibly deeper)
+    album path the webhook coalesced, so a row is annotated when such an entry
+    sits at or under it. Only an ``imported`` row for the entry itself, unchanged
+    since, leaves it out (the shared rule, ``_not_imported_yet``).
     """
     ledger_rows = ledger.entries() if ledger is not None else []
     items: list[InboxItem] = []
-    for entry in _not_imported_entries(inbox_dir, held):
+    for entry in _not_imported_entries(inbox_dir, ledger, held):
         item = _inbox_item_for_entry(entry, ledger_rows, settle_seconds=settle_seconds, now=now)
         if item is not None:
             items.append(item)

@@ -57,7 +57,7 @@ class AcquisitionQueue:
         self._ledger = ledger
         # When set, enqueue() re-rejects any path not contained under it — belt
         # and suspenders behind the webhook's own contain(), because the drain
-        # performs the destructive MOVE import. None = no extra check (the unit
+        # imports whatever it is handed, unattended. None = no extra check (the unit
         # tests that drive the queue directly with already-trusted folders).
         self._inbox_dir = inbox_dir
         self._swap_lock = swap_lock
@@ -107,7 +107,7 @@ class AcquisitionQueue:
         if self._stop.is_set():
             return
         # ``strict=True``: a strict descendant only. contain() admits the inbox ROOT
-        # itself, but MOVE-importing the root would sweep the whole inbox, so the
+        # itself, but importing the root would sweep the whole inbox, so the
         # root is rejected here too. Belt-and-suspenders behind the webhook's guard.
         if self._inbox_dir is not None:
             if contain(str(folder), self._inbox_dir, strict=True) is None:
@@ -169,10 +169,12 @@ class AcquisitionQueue:
         try:
             job_id = self._import_registry.start(
                 str(folder),
-                # ``incremental=False`` is beets' own ``-I``: slskd writes a
-                # re-download into the same folder, and history keys on the
-                # folder path alone, so a recorded folder would be skipped.
-                options=ImportOptions(operation="move", unattended=True, incremental=False),
+                # ``default`` is the file operation beets' config resolves to
+                # (decisions #77: one source of truth). ``incremental=False`` is
+                # beets' own ``-I``: slskd writes a re-download into the same
+                # folder, and history keys on the folder path alone, so a
+                # recorded folder would be skipped.
+                options=ImportOptions(operation="default", unattended=True, incremental=False),
                 origin="inbox",
             )
         except (RuntimeError, LibraryRootUnavailableError) as exc:

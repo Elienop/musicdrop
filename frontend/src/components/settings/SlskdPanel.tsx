@@ -2,6 +2,10 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router";
 
 import {
+  IMPORT_OPERATION_LINE,
+  useImportOperation,
+} from "@/api/useImportOperation";
+import {
   type SlskdSettings,
   type SlskdSettingsUpdate,
   useSaveSlskdSettings,
@@ -31,6 +35,11 @@ const WEBHOOK_SNIPPET = `integration:
             value: <your webhook secret>
       retry:
         attempts: 10`;
+
+/** The auto-import switch's help, and the line under it saying what an import
+ * does with the downloaded files. */
+const AUTO_IMPORT_HELP_ID = "slskd-auto-import-help";
+const FILES_LINE_ID = "slskd-files-help";
 
 /** Settings → slskd: connect a slskd instance (base URL + write-only API key +
  * Path in slskd, slskd's download folder as slskd sees it), set the shared webhook secret, and flip
@@ -69,6 +78,11 @@ export function SlskdPanel() {
 function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) {
   const save = useSaveSlskdSettings();
   const test = useTestSlskd();
+  // slskd downloads import with beets' own file operation, as every import
+  // does; Add from folder says it under its path box in the same words.
+  const operation = useImportOperation();
+  const filesLine =
+    operation.data === undefined ? null : IMPORT_OPERATION_LINE[operation.data];
 
   const [baseUrl, setBaseUrl] = useState(initial.base_url);
   const [token, setToken] = useState("");
@@ -266,15 +280,35 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
             id="slskd-auto-import"
             checked={autoImport}
             onCheckedChange={setAutoImport}
+            aria-describedby={
+              filesLine === null
+                ? AUTO_IMPORT_HELP_ID
+                : `${AUTO_IMPORT_HELP_ID} ${FILES_LINE_ID}`
+            }
           />
           <div className="flex flex-col gap-1">
             <label htmlFor="slskd-auto-import" className="text-sm font-medium">
               Auto-import completed downloads
             </label>
-            <p className="text-muted-foreground text-xs">
+            <p id={AUTO_IMPORT_HELP_ID} className="text-muted-foreground text-xs">
               when on, a finished slskd download imports itself into the
               library; uncertain matches are set aside for review
             </p>
+            {/* What an import does with the files, from the operation beets
+                loaded. Nothing while it loads or if it can't be read: a guess
+                would be a promise about the user's files. The id is on the
+                sentence only, so the switch is not described as "… Change". */}
+            {filesLine !== null && (
+              <p className="text-muted-foreground text-xs">
+                <span id={FILES_LINE_ID}>{filesLine}</span>{" "}
+                <Link
+                  to="/settings/beets"
+                  className="text-foreground focus-ring rounded-sm underline"
+                >
+                  Change
+                </Link>
+              </p>
+            )}
           </div>
         </div>
 

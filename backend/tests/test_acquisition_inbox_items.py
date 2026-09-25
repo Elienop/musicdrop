@@ -139,7 +139,7 @@ def test_list_inbox_annotates_set_aside_without_filtering(tmp_path: Path) -> Non
 # ----- single-folder import -----
 
 
-def test_import_inbox_item_starts_attended_move(tmp_path: Path) -> None:
+def test_import_inbox_item_starts_attended_with_beets_file_operation(tmp_path: Path) -> None:
     inbox = tmp_path / "inbox"
     _album(inbox, "Echoes 4412", tracks=2)
     fake = FakeImportRunner(parked=[])
@@ -152,7 +152,8 @@ def test_import_inbox_item_starts_attended_move(tmp_path: Path) -> None:
         assert body["started"] is True
         assert body["job_id"]
         assert fake.received_options is not None
-        assert fake.received_options.operation == "move"
+        # beets' own file operation, whatever the config says (decisions #77).
+        assert fake.received_options.operation == "default"
         assert fake.received_options.unattended is False
         # beets' ``-I``: a re-download into the same folder is never skipped.
         assert fake.received_options.incremental is False
