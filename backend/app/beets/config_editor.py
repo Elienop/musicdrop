@@ -46,6 +46,7 @@ from ruamel.yaml.resolver import VersionedResolver
 
 from app.beets.config_check import (
     NOT_A_MAPPING,
+    STORE_LAYOUT,
     NotAMapping,
     check_config_text,
     load_config_text,
@@ -89,6 +90,7 @@ from app.models.config_editor import (
     ReplaceRuleInput,
     SaveNamingRequest,
     SaveRequest,
+    ValidationErrorItem,
 )
 from app.playlists.atomic import write_atomic_text
 
@@ -524,10 +526,10 @@ def _on_disk_mapping(text: str) -> CommentedMap:
     duplicate key, a ``%`` plain value, ``!!omap {…}``) reads as "does not
     parse" here.
 
-    A file with no YAML node is an empty mapping; a save keeps its comments,
-    except one above ``---``, and writes one after ``--- `` indented four spaces.
-    Every other top level that is not a mapping is refused, because a save could
-    not keep their comments.
+    A file with no YAML node is an empty mapping, and every other top level that
+    is not a mapping is refused here. Neither can be saved: the check that
+    follows refuses the empty mapping for its missing ``directory:`` and
+    ``library:``, so this only picks which refusal the panel shows.
     """
     try:
         doc = parse_yaml(text)
@@ -641,6 +643,14 @@ def _replace_map(replace: list[ReplaceRuleInput]) -> CommentedMap:
     return m
 
 
+def _on_disk_row(item: ValidationErrorItem) -> str:
+    """A check row as the Naming panel prints it: key, beets' words, where to fix it."""
+    text = f"{item.loc}: {item.msg}" if item.loc else item.msg
+    if item.type == STORE_LAYOUT:
+        return text
+    return f"{text.removesuffix('.')}. Fix it in Settings → Beets."
+
+
 def save_naming(
     handle: LibraryHandle, req: SaveNamingRequest, *, settings: Settings
 ) -> BeetsConfigSnapshot:
@@ -712,18 +722,17 @@ def save_naming(
             text = dumped(doc, _yaml())
 
             # 4. The Beets Save's check, on the text about to be written. The
-            # panel shows a ``config_on_disk`` row's text after "Save failed. ",
-            # so each row carries its key the way the Beets editor prints it.
+            # panel shows the first ``config_on_disk`` row's text after "Save
+            # failed. ", so each row carries its key the way the Beets editor
+            # prints it, and where to fix it. No row is about a value this panel
+            # writes: step 1 compiled every pattern, and the check reads no
+            # template. A store-layout row names its own remedy.
             errors = check_config_text(text, settings=settings, handle=handle).errors
             if errors:
                 raise HTTPException(
                     status_code=422,
                     detail=[
-                        {
-                            "loc": "",
-                            "msg": f"{item.loc}: {item.msg}" if item.loc else item.msg,
-                            "type": _ON_DISK_ERROR_TYPE,
-                        }
+                        {"loc": "", "msg": _on_disk_row(item), "type": _ON_DISK_ERROR_TYPE}
                         for item in errors
                     ],
                 )

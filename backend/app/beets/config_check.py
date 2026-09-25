@@ -48,6 +48,7 @@ from app.models.config_editor import (
 
 __all__ = [
     "NOT_A_MAPPING",
+    "STORE_LAYOUT",
     "ConfigCheck",
     "NotAMapping",
     "beets_read_failures",
@@ -62,8 +63,8 @@ NOT_A_MAPPING: Final = "config.yaml must be a mapping of settings."
 #: ``type`` of a row from one of beets' typed reads (:func:`beets_read_failures`).
 _BEETS_READ: Final = "beets_read"
 
-#: ``type`` of a row about ``include:`` or the store layout.
-_STORE_LAYOUT: Final = "store_layout"
+#: ``type`` of a row about ``include:`` or the store layout; its text names its remedy.
+STORE_LAYOUT: Final = "store_layout"
 
 #: ``type`` of a row for an include beets would skip (an error since 2026-09-25,
 #: as it is at Apply and boot).
@@ -142,18 +143,21 @@ def beets_read_failures(cfg: confuse.Configuration) -> list[ReadFailure]:
       because it changes ``sys.path``, ``beetsplug.__path__`` and the global
       config); ``:196-198`` (``_verify_config``, sent on ``pluginload``), asked
       of every enabled plugin; ``:265`` (``verbose``, read by every plugin
-      listener); ``app/beets/setup.py:275-276``; ``beets/library/library.py:84``
+      listener); ``app/beets/setup.py:278-279``; ``beets/library/library.py:84``
       and ``:64-71``; ``beets/dbcore/db.py:1064`` (on a migration).
     * import: MusicDrop's pre-check (``app/beets/import_session.py:2444-2445``);
       ``beets/importer/stages.py:385``; ``beets/importer/tasks.py:509-511,1475``;
       ``beets/importer/session.py:109-112,140,179-181``; and
       ``beets/autotag/match.py:285,288`` for the two thresholds MusicDrop limits.
 
-    ``_verify_config`` runs only for a metadata source; for any other plugin a
-    section that is not a collection makes beets drop it with an error. Asking
-    it of every enabled plugin refuses both, and imports no plugin code.
-    Nothing else a plugin reads is here: beets drops a plugin whose own settings
-    fail and starts without it.
+    ``_verify_config``'s read is beets' own only for a metadata source, which
+    cannot be known without importing the plugin. It is asked here of every
+    enabled plugin: a ``null`` or scalar section fails it, as it fails the first
+    read of any plugin that reads its settings. That is stricter than beets for a
+    plugin that reads none (``mbsync: no`` boots). A list section is not asked:
+    some plugins read their section as a list (``beetsplug/advancedrewrite.py:168``,
+    ``beetsplug/loadext.py:29``). Nothing else a plugin reads is here: beets
+    drops a plugin whose own settings fail and starts without it.
     """
     failures: list[ReadFailure] = []
 
@@ -165,7 +169,12 @@ def beets_read_failures(cfg: confuse.Configuration) -> list[ReadFailure]:
             failures.append(ReadFailure(path, exc))
             return None
 
-    read(("pluginpath",), lambda: cfg["pluginpath"].as_str_seq(split=False))
+    read(
+        ("pluginpath",),
+        lambda: [
+            str(Path(p).expanduser().absolute()) for p in cfg["pluginpath"].as_str_seq(split=False)
+        ],
+    )
     names: list[str] = unique_list(read(("plugins",), lambda: cfg["plugins"].as_str_seq()) or [])
     cfg.add({"disabled_plugins": []})
     disabled = set(read(("disabled_plugins",), lambda: cfg["disabled_plugins"].as_str_seq()) or [])
@@ -177,7 +186,8 @@ def beets_read_failures(cfg: confuse.Configuration) -> list[ReadFailure]:
         disabled.add("musicbrainz")
     enabled = [name for name in names if name not in disabled]
     for name in enabled:
-        read((name,), partial(cfg[name].__contains__, "source_weight"))
+        if not (cfg[name].exists() and isinstance(cfg[name].get(), list)):
+            read((name,), partial(cfg[name].__contains__, "source_weight"))
     if enabled:
         read(("verbose",), lambda: cfg["verbose"].get(int))
     read(("library",), lambda: cfg["library"].as_filename())
@@ -393,7 +403,7 @@ def _include_rows(loaded: LoadedCandidate, positions: _Positions) -> list[Valida
     if loaded.error is not None:
         rows.append(
             ValidationErrorItem(
-                loc="include", msg=str(loaded.error), type=_STORE_LAYOUT, line=line, column=column
+                loc="include", msg=str(loaded.error), type=STORE_LAYOUT, line=line, column=column
             )
         )
     return rows
@@ -423,7 +433,7 @@ def _layout_rows(
         return []
     line, column = positions.at((key,))
     return [
-        ValidationErrorItem(loc=key, msg=str(error), type=_STORE_LAYOUT, line=line, column=column)
+        ValidationErrorItem(loc=key, msg=str(error), type=STORE_LAYOUT, line=line, column=column)
     ]
 
 
@@ -461,7 +471,9 @@ def check_config_text(
     errors += _policy_rows(document, failed, positions)
     errors += _include_rows(loaded, positions)
     # Only over a complete candidate whose own paths beets reads, as before:
-    # without ``directory:`` the schema's row stands for it.
+    # without ``directory:`` the schema's row stands for it. A path beets cannot
+    # read has its row already; from an include it would get a second one here
+    # (``_include_sets_a_non_path``), which the ``reported`` check does not drop.
     if (
         handle is not None
         and loaded.error is None

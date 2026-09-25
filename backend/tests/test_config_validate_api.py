@@ -194,8 +194,10 @@ def test_validate_refuses_a_non_bool_for_every_other_switch_beets_reads_typed(
     client: TestClient, tmp_path: Path, key: str, value: str
 ) -> None:
     """beets reads these with ``.get(bool)`` (``importer/stages.py:385``,
-    ``importer/tasks.py:510,1475``). Pydantic read ``n`` and ``'no'`` as False
-    here and ``1`` as True, so ``write: 1`` used to save and fail every import."""
+    ``importer/tasks.py:510,1475``). Before, MusicDrop's own rule refused ``n``
+    and ``'no'`` for ``write`` and ``delete`` but read ``1`` as True, and did not
+    check ``remux_mp3_in_wav`` at all, so ``write: 1`` saved and failed every
+    import."""
     text = _head(tmp_path) + f"import:\n  {key}: {value}\n"
 
     r = client.post("/api/config/validate", json={"yaml_text": text})

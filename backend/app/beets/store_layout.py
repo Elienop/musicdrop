@@ -1692,9 +1692,10 @@ def load_candidate(document: Mapping[str, Any], beets_dir: Path) -> LoadedCandid
     #
     # Includes are NOT confined to the beets dir. beets does not confine them, and
     # a gate that refused a config beets loads would be worse than the read this
-    # exposes — which is bounded by the session gate, by the read budget, and by
-    # the rows below, which narrow it to "this file parses as a mapping" rather
-    # than "here is its content".
+    # exposes. Validate's rows can quote an included value beets refuses (a
+    # ``replace:`` pattern, an ``import:`` switch). That is bounded by the session
+    # gate and the read budget, and after an Apply the running-config view shows
+    # the same values, secrets hidden.
     skipped: list[SkippedInclude] = []
     # One read per resolved path, so a repeated entry costs one. The entry is
     # still ``set`` again at its own position: the LAST include wins, so dropping

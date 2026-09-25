@@ -65,6 +65,10 @@ _TYPED = [
         _read("pluginpath", "must be a whitespace-separated string or a list", 3, 12),
     ),
     (
+        "pluginpath: ~nosuchuser_zz/p\n",
+        _read("", "RuntimeError: Could not determine home directory.", 3, 12),
+    ),
+    (
         "disabled_plugins: 5\n",
         _read("disabled_plugins", "must be a whitespace-separated string or a list", 3, 18),
     ),
@@ -74,6 +78,8 @@ _TYPED = [
     ),
     ("verbose: x\n", _read("verbose", "must be a number", 3, 9)),
     ("timeout: x\n", _read("timeout", "must be numeric, not str", 3, 9)),
+    # PyYAML keeps the last of a repeated key, so the row goes on that one.
+    ("timeout: 5\ntimeout: x\n", _read("timeout", "must be numeric, not str", 4, 9)),
     ("replace: 5\n", _read("replace", "must be a Mapping, not int", 3, 9)),
     ("replace:\n  '[': _\n", _read("", "Malformed regular expression in replace: [", 4, 2)),
     (
@@ -113,10 +119,12 @@ _TYPED = [
         "musicbrainz-no",
         "plugins-int",
         "pluginpath-int",
+        "pluginpath-no-such-user",
         "disabled-plugins-int",
         "deezer-no",
         "verbose-str",
         "timeout-str",
+        "timeout-repeated",
         "replace-int",
         "replace-malformed",
         "backup-int",
@@ -185,6 +193,11 @@ def test_a_merged_key_gets_the_line_it_is_written_on(
         ("import: !!omap [copy: yes]\n", 3),
         ("x: !!float abc\n", None),
         ("x: !!bool ture\n", None),
+        ("x: !!bool 'y'\n", None),
+        ("x: {k: 0:}\n", 3),
+        ("x: a\u2028b\n", 5),
+        ("x: a\u2029b\n", 5),
+        ("x: a\x85b\n", 5),
     ],
     ids=[
         "python-tag",
@@ -199,12 +212,20 @@ def test_a_merged_key_gets_the_line_it_is_written_on(
         "omap-sequence",
         "float-tag",
         "bool-tag",
+        "bool-tag-quoted-y",
+        "flow-mapping-colon",
+        "line-separator-plain",
+        "paragraph-separator-plain",
+        "next-line-plain",
     ],
 )
 def test_yaml_beets_loader_refuses_is_refused(
     client: TestClient, beets_library: LibraryHandle, section: str, line: int | None
 ) -> None:
-    """ruamel accepted every one of these; beets' loader, the one boot uses, does not."""
+    """ruamel accepted every one of these; beets' loader, the one boot uses, does not.
+
+    A plain LS, PS or NEL is a line break to PyYAML, so the row's line counts it.
+    """
     [row] = _refused(client, beets_library, _head(beets_library) + section)
     assert (row["loc"], row["type"], row["line"]) == ("", "yaml_parse", line)
 
@@ -235,6 +256,13 @@ def test_a_float_tag_prints_nothing(
         "plugins: [musicbrainz, the, inline]\n",
         "match:\n  strong_rec_thresh: 0.5\n",
         "# a comment\nimport:\n  autotag: yes   # kept\n",
+        "x: !!str x\n",
+        "x: 2001-12-14 21:59:43.1234567\n",
+        'lastgenre:\n  separator: "a\x85b"\n',
+        'lastgenre:\n  separator: "a\u2028b"\n',
+        "plugins: []\nverbose: x\n",
+        "plugins: [advancedrewrite]\nadvancedrewrite:\n  - artist ODD EYE CIRCLE: Odd Eye Circle\n",
+        "plugins: [loadext]\nloadext: []\n",
     ],
     ids=[
         "colon-anchor-unused",
@@ -245,6 +273,13 @@ def test_a_float_tag_prints_nothing(
         "plugins-beets-has",
         "threshold-in-range",
         "comments",
+        "str-tag",
+        "timestamp-seven-digits",
+        "next-line-quoted",
+        "line-separator-quoted",
+        "verbose-with-no-plugin",
+        "list-section-advancedrewrite",
+        "list-section-loadext",
     ],
 )
 def test_what_beets_loads_is_clean_and_saves_as_typed(
@@ -252,7 +287,11 @@ def test_what_beets_loads_is_clean_and_saves_as_typed(
 ) -> None:
     """The other direction: ruamel refused the first four, the allowlist refused
     ``the`` and ``inline``, and the dump rewrote ``-0644`` into a value beets
-    refuses. What lands on disk is the text beets was asked about."""
+    refuses. What lands on disk is the text beets was asked about.
+
+    beets reads ``verbose`` only for a plugin's listener, so with no plugin a bad
+    one boots. ``advancedrewrite`` and ``loadext`` read their section as a list
+    (``beetsplug/advancedrewrite.py:168``, ``beetsplug/loadext.py:29``)."""
     text = _head(beets_library) + section
 
     lint = client.post("/api/config/validate", json={"yaml_text": text})
@@ -336,17 +375,24 @@ def test_a_quoted_no_in_a_flag_beets_tests_with_a_bare_if_is_refused(
     ]
 
 
+@pytest.mark.parametrize(
+    ("section", "row"),
+    [
+        ("the: no\n", _read("", "the must be a collection, not bool", 4, 5)),
+        ("the:\n", _read("", "the must be a collection, not NoneType", 4, 4)),
+    ],
+    ids=["bool", "null"],
+)
 def test_any_enabled_plugin_with_a_section_that_is_not_a_collection_is_refused(
-    client: TestClient, beets_library: LibraryHandle
+    client: TestClient, beets_library: LibraryHandle, section: str, row: dict[str, object]
 ) -> None:
     """``the`` is no metadata source, so beets' ``_verify_config`` would not stop
-    the start; beets drops the plugin with an error instead
-    (``research-engine.md`` §4). Neither is what the operator asked for."""
-    text = _head(beets_library) + "plugins: [the]\nthe: no\n"
+    the start; ``the`` fails its first read of its settings and beets drops it
+    with an error instead (``research-engine.md`` §4). Neither is what the
+    operator asked for."""
+    text = _head(beets_library) + "plugins: [the]\n" + section
 
-    assert _refused(client, beets_library, text) == [
-        _read("", "the must be a collection, not bool", 4, 5)
-    ]
+    assert _refused(client, beets_library, text) == [row]
 
 
 @pytest.mark.parametrize(

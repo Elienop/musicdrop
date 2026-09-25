@@ -249,8 +249,9 @@ class ConfigAdvisory(BaseModel):
     # This docstring is PUBLISHED as the schema description, so the rest is a
     # comment. Deliberately not a ``ValidationErrorItem``: the editor paints the
     # error list red in CodeMirror's lint gutter, and every config an advisory
-    # fires on is one both this app and beets accept. Two sources today — an
-    # ``import:`` key MusicDrop overrides, and an ``include:`` entry beets drops.
+    # fires on is one both this app and beets accept. One source today: an
+    # ``import:`` key MusicDrop overrides. An ``include:`` entry beets would skip
+    # was one until 2026-09-25; it is an error row now.
     #
     # No ``line``/``column``: resolving those needs the composed YAML the beets
     # adapter holds (``app/beets/config_check.py``), and this module is
@@ -259,7 +260,7 @@ class ConfigAdvisory(BaseModel):
     # setting.
 
     key: str
-    """The setting this is about, dotted: ``"import.autotag"``, ``"include"``."""
+    """The setting this is about, dotted: ``"import.autotag"``."""
 
     message: str
     """One or two sentences: what really happens, and where the value still counts."""

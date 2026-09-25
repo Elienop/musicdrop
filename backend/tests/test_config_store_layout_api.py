@@ -675,12 +675,13 @@ def test_an_include_the_gate_will_not_read_answers_a_lint_row(
     assert "could not be read" in str(rows[0]["msg"]), rows
 
 
+@pytest.mark.parametrize("key", ["directory", "library"])
 @pytest.mark.parametrize(
     ("value", "kind"),
     [("42", "int"), ("~", "NoneType"), ("[/x]", "list"), ("010", "int"), ("yes", "bool")],
 )
 def test_an_include_that_makes_directory_a_non_path_answers_a_lint_row(
-    client: TestClient, beets_library: LibraryHandle, value: str, kind: str
+    client: TestClient, beets_library: LibraryHandle, value: str, kind: str, key: str
 ) -> None:
     """The overlay the document never shows, so only beets' read can report it.
 
@@ -691,9 +692,12 @@ def test_an_include_that_makes_directory_a_non_path_answers_a_lint_row(
     names the include it came from, as written in ``include:``: config.yaml's
     own ``directory:`` is valid, and without the name the operator cannot tell
     where to look.
+
+    One row: the store-layout check, which would add "not a path" for the same
+    key, is skipped when beets' read of either path already failed.
     """
     overlay = beets_library.beets_dir / "overlay.yaml"
-    overlay.write_text(f"directory: {value}\n", encoding="utf-8")
+    overlay.write_text(f"{key}: {value}\n", encoding="utf-8")
     text = _with_include(Path(beets_library.lib.directory.decode()), "overlay.yaml")
     before = beets_library.config_path.read_bytes()
 
@@ -704,7 +708,7 @@ def test_an_include_that_makes_directory_a_non_path_answers_a_lint_row(
     assert r.status_code == 200, r.text
     assert r.json()["errors"] == [
         {
-            "loc": "directory",
+            "loc": key,
             "msg": f"must be a filename, not {kind} (in overlay.yaml)",
             "type": "beets_read",
             "line": None,
