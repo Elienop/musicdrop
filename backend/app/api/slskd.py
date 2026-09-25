@@ -64,26 +64,32 @@ def get_slskd_store() -> SlskdConfigStore:
     return SlskdConfigStore(directory / "slskd.json", env_defaults=env)
 
 
-def _to_settings(config: SlskdConfig) -> SlskdSettings:
+def _to_settings(config: SlskdConfig, request: Request) -> SlskdSettings:
+    # ``False`` under a lifespan-less client, which never boots the webhook's
+    # state: nothing has missed there.
+    missed: bool = getattr(request.app.state, "slskd_last_download_missed", False)
     return SlskdSettings(
         base_url=config.base_url,
         downloads_prefix=config.downloads_prefix,
         auto_import=config.auto_import,
         has_token=bool(config.token),
         has_webhook_secret=bool(config.webhook_secret),
+        last_download_missed=missed,
     )
 
 
 @router.get("/slskd/settings")
 async def get_slskd_settings(
+    request: Request,
     store: Annotated[SlskdConfigStore, Depends(get_slskd_store)],
 ) -> SlskdSettings:
-    return _to_settings(store.get())
+    return _to_settings(store.get(), request)
 
 
 @router.put("/slskd/settings")
 async def put_slskd_settings(
     body: SlskdSettingsUpdate,
+    request: Request,
     store: Annotated[SlskdConfigStore, Depends(get_slskd_store)],
 ) -> SlskdSettings:
     config = await run_in_threadpool(
@@ -94,7 +100,7 @@ async def put_slskd_settings(
         webhook_secret=body.webhook_secret,
         auto_import=body.auto_import,
     )
-    return _to_settings(config)
+    return _to_settings(config, request)
 
 
 @router.post("/slskd/test")
@@ -178,15 +184,42 @@ async def slskd_webhook(
         return WebhookAck(status="ignored")
 
     inbox_dir: Path = request.app.state.inbox_dir
-    remapped = service.remap_to_inbox(event.localDirectoryName, config.downloads_prefix, inbox_dir)
-    # ``strict=True`` also rejects an EMPTY remainder (localDirectoryName ==
-    # downloads_prefix, or "/" under the default empty prefix) that remaps to the
-    # inbox ROOT — a whole-inbox MOVE would sweep in unrelated/still-downloading
-    # siblings (and the ledger); only a strict descendant is a valid album target.
-    # contain (resolve + lstat), coalesce_album_root (parent.iterdir) and enqueue
-    # (resolve + ledger stat) all do blocking filesystem I/O — offload them so the
-    # webhook handler never stalls the event loop (and the SSE stream) on a slow
-    # NAS scan.
+    contained = await _map_to_inbox(event.localDirectoryName, config.downloads_prefix, inbox_dir)
+    # The panel's miss line: every message that reaches the mapping sets it, and
+    # boot sets it False. slskd learns nothing from a 200, so this process is the
+    # only side that knows the message missed. Memory only: after a restart the
+    # next miss sets it again.
+    request.app.state.slskd_last_download_missed = contained is None
+    if contained is None:
+        return WebhookAck(status="ignored")
+
+    album = await inbox_read(partial(coalesce_album_root, contained, inbox_dir))
+    await inbox_read(partial(request.app.state.acquisition_queue.enqueue, album))
+    return WebhookAck(status="queued")
+
+
+async def _map_to_inbox(local_dir: str, downloads_prefix: str, inbox_dir: Path) -> Path | None:
+    """slskd's reported folder as a strict descendant of the inbox, or ``None``.
+
+    A miss logs one line naming both paths and is answered ``ignored`` (200) by
+    the caller, so slskd does not retry a folder that will never map.
+    """
+    mapped = service.remap_to_inbox(local_dir, downloads_prefix, inbox_dir)
+    if mapped is None:
+        # ``%r``: both values are text a caller or the operator typed, and a
+        # newline under ``%s`` forges a whole log record.
+        logger.warning(
+            "slskd webhook: %r is not inside Path in slskd %r; ignored",
+            local_dir,
+            downloads_prefix,
+        )
+        return None
+    # ``strict=True`` also rejects the inbox ROOT (the reported folder IS Path in
+    # slskd, or "/" with it empty): a whole-inbox MOVE would sweep in unrelated
+    # and still-downloading siblings (and the ledger); only a strict descendant is
+    # an album. contain (resolve + lstat), coalesce_album_root (parent.iterdir)
+    # and enqueue (resolve + ledger stat) all do blocking filesystem I/O, so they
+    # run off the event loop (and the SSE stream) in case the NAS is slow.
     #
     # Under the SAME cap the acquisition GETs use, because these are inbox
     # filesystem reads and this route is the one an unauthenticated producer
@@ -196,14 +229,12 @@ async def slskd_webhook(
     # behind sign-in - exactly what ``_INBOX_SCAN_SLOTS`` exists to stop, and
     # what its "5 of 40" note claimed was already true. One hop at a time, so a
     # webhook holds at most one token.
-    contained = await inbox_read(partial(contain, remapped, inbox_dir, strict=True))
+    contained = await inbox_read(partial(contain, str(mapped), inbox_dir, strict=True))
     if contained is None:
         logger.warning(
-            "slskd webhook: %r maps outside the inbox (or to its root); ignored",
-            event.localDirectoryName,
+            "slskd webhook: %r maps to %r, outside the inbox %r (or its root); ignored",
+            local_dir,
+            str(mapped),
+            str(inbox_dir),
         )
-        return WebhookAck(status="ignored")
-
-    album = await inbox_read(partial(coalesce_album_root, contained, inbox_dir))
-    await inbox_read(partial(request.app.state.acquisition_queue.enqueue, album))
-    return WebhookAck(status="queued")
+    return contained

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -69,3 +71,40 @@ def test_check_calls_version_endpoint_with_api_key(monkeypatch: pytest.MonkeyPat
     assert version == "0.22.3"
     assert seen["url"] == "http://slskd:5030/api/v0/application/version"
     assert seen["headers"] == {"X-API-Key": "secret-key"}
+
+
+_INBOX = Path("/inbox")
+
+
+@pytest.mark.parametrize(
+    ("reported", "path_in_slskd", "expected"),
+    [
+        ("/app/downloads/Artist/Album", "/app/downloads", _INBOX / "Artist" / "Album"),
+        ("/app/downloads/Album", "/app/downloads/", _INBOX / "Album"),
+        # The prefix itself maps to the inbox root; ``contain(strict=True)`` refuses it.
+        ("/app/downloads", "/app/downloads", _INBOX),
+        # ``..`` is kept for ``contain`` to resolve and refuse.
+        ("/app/downloads/../../etc", "/app/downloads", _INBOX / ".." / ".." / "etc"),
+        # Empty: slskd sees the same path, so the folder is used as it is.
+        ("/media/downloads/Album", "", Path("/media/downloads/Album")),
+    ],
+)
+def test_remap_to_inbox_maps_by_whole_folder_names(
+    reported: str, path_in_slskd: str, expected: Path
+) -> None:
+    assert service.remap_to_inbox(reported, path_in_slskd, _INBOX) == expected
+
+
+@pytest.mark.parametrize(
+    ("reported", "path_in_slskd"),
+    [
+        ("/app/downloads2/Album", "/app/downloads"),
+        ("/app/down/Album", "/app/downloads"),
+        ("/other/Album", "/app/downloads"),
+        ("/app/downloads/Album", "app/downloads"),
+    ],
+)
+def test_remap_to_inbox_refuses_a_folder_outside_path_in_slskd(
+    reported: str, path_in_slskd: str
+) -> None:
+    assert service.remap_to_inbox(reported, path_in_slskd, _INBOX) is None

@@ -19,6 +19,15 @@ class SlskdSettings(BaseModel):
     ``has_token`` / ``has_webhook_secret`` let the panel show a "saved — enter to
     replace" placeholder for each write-only secret without ever exposing the
     value.
+
+    ``downloads_prefix`` is "Path in slskd": slskd's download folder as slskd
+    sees it. A webhook folder inside it, by whole folder names, is read under
+    slskd's folder as MusicDrop sees it; empty means both see the same path. A
+    folder outside it is refused, not re-rooted.
+
+    ``last_download_missed`` is true when slskd's last webhook was refused
+    because its folder did not map into slskd's folder, and false once one maps.
+    It lives in memory: false after a restart until the next miss.
     """
 
     base_url: str
@@ -26,6 +35,7 @@ class SlskdSettings(BaseModel):
     auto_import: bool
     has_token: bool
     has_webhook_secret: bool
+    last_download_missed: bool
 
 
 class SlskdSettingsUpdate(BaseModel):

@@ -10,7 +10,9 @@ webhook returns; dup/unmappable/ignored are all ``200``.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import logging
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -266,8 +268,8 @@ def test_webhook_ignores_empty_remainder_inbox_root(
 def test_webhook_ignores_root_slash_under_empty_prefix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Default empty downloads_prefix + localDirectoryName "/" -> lstrip("/") -> ""
-    # -> the inbox ROOT again. Same whole-inbox MOVE; refused 200/ignored.
+    # Default empty downloads_prefix + localDirectoryName "/": used as it is, so
+    # "/" itself, which is no folder inside the inbox; refused 200/ignored.
     _write_config(tmp_path)
     monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
     (tmp_path / "beets" / "inbox").mkdir()
@@ -458,3 +460,210 @@ def test_an_authenticated_caller_still_gets_its_422(
             headers={"X-API-Key": "hook"},
         )
     assert r.status_code == 422
+
+
+# ----- Path in slskd (the stored ``downloads_prefix``) and the miss flag -----
+
+_PATH_IN_SLSKD = "/app/downloads"
+
+
+@contextmanager
+def _slskd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, path_in_slskd: str
+) -> Iterator[tuple[TestClient, AcquisitionQueue, Path]]:
+    """A booted app with slskd set up, a probe queue, and the inbox's real path.
+
+    The bank is pinned to this test's tmp dir as well as ``beets_dir``, so the
+    lifespan's bank reconcile can never open the dev checkout's own bank.
+    """
+    _write_config(tmp_path)
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
+    monkeypatch.setattr(settings, "bank_dir", str(tmp_path / "bank"))
+    inbox = (tmp_path / "beets").resolve() / "inbox"
+    inbox.mkdir()
+    app.dependency_overrides.clear()
+    with TestClient(app) as client:
+        probe = _probe_queue(tmp_path)
+        monkeypatch.setattr(app.state, "acquisition_queue", probe)
+        _configure(
+            client,
+            base_url="http://slskd:5030",
+            token="t",
+            downloads_prefix=path_in_slskd,
+            webhook_secret="hook",
+            auto_import=True,
+        )
+        yield client, probe, inbox
+
+
+def _deliver(client: TestClient, folder: str, *, secret: str = "hook") -> tuple[int, object]:
+    r = client.post(
+        "/api/slskd/webhook",
+        headers={"X-API-Key": secret},
+        json={"type": "DownloadDirectoryComplete", "localDirectoryName": folder},
+    )
+    return r.status_code, r.json()
+
+
+def _missed(client: TestClient) -> object:
+    return client.get("/api/slskd/settings").json()["last_download_missed"]
+
+
+def test_a_folder_inside_path_in_slskd_is_queued_under_slskds_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _slskd(tmp_path, monkeypatch, path_in_slskd=_PATH_IN_SLSKD) as (client, probe, inbox):
+        (inbox / "Album").mkdir()
+        assert _deliver(client, "/app/downloads/Album") == (200, {"status": "queued"})
+        assert probe._dedupe == {str(inbox / "Album")}
+
+
+def test_a_trailing_slash_on_path_in_slskd_matches_the_same(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _slskd(tmp_path, monkeypatch, path_in_slskd="/app/downloads/") as (client, probe, inbox):
+        (inbox / "Album").mkdir()
+        assert _deliver(client, "/app/downloads/Album") == (200, {"status": "queued"})
+        assert probe._dedupe == {str(inbox / "Album")}
+
+
+@pytest.mark.parametrize(
+    ("path_in_slskd", "reported", "old_reroot"),
+    [
+        # Matches only as text: the old ``removeprefix`` re-rooted it to <inbox>/2/Album.
+        (_PATH_IN_SLSKD, "/app/downloads2/Album", "2/Album"),
+        # Outside it entirely: the old code re-rooted it to <inbox>/other/Album.
+        (_PATH_IN_SLSKD, "/other/Album", "other/Album"),
+        # slskd's whole folder, which maps to the inbox root.
+        (_PATH_IN_SLSKD, "/app/downloads", None),
+        (_PATH_IN_SLSKD, "/app/downloads/../../etc", None),
+        # A relative saved value never matches slskd's absolute path.
+        ("app/downloads", "/app/downloads/Album", "app/downloads/Album"),
+    ],
+)
+def test_a_folder_that_does_not_map_is_refused_not_rerooted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path_in_slskd: str,
+    reported: str,
+    old_reroot: str | None,
+) -> None:
+    with _slskd(tmp_path, monkeypatch, path_in_slskd=path_in_slskd) as (client, probe, inbox):
+        if old_reroot is not None:
+            # A real folder where the old re-root pointed, so a regression queues it.
+            (inbox / old_reroot).mkdir(parents=True)
+        assert _deliver(client, reported) == (200, {"status": "ignored"})
+        assert probe._queue.qsize() == 0
+        assert probe._dedupe == set()
+        assert _missed(client) is True
+
+
+def test_a_symlink_inside_slskds_folder_that_points_out_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path / "outside" / "Album"
+    outside.mkdir(parents=True)
+    with _slskd(tmp_path, monkeypatch, path_in_slskd=_PATH_IN_SLSKD) as (client, probe, inbox):
+        (inbox / "Link").symlink_to(outside, target_is_directory=True)
+        assert _deliver(client, "/app/downloads/Link") == (200, {"status": "ignored"})
+        assert probe._queue.qsize() == 0
+        assert _missed(client) is True
+
+
+def test_an_empty_path_in_slskd_uses_the_reported_folder_as_it_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _slskd(tmp_path, monkeypatch, path_in_slskd="") as (client, probe, inbox):
+        (inbox / "Album").mkdir()
+        assert _deliver(client, str(inbox / "Album")) == (200, {"status": "queued"})
+        assert probe._dedupe == {str(inbox / "Album")}
+
+
+def test_an_empty_path_in_slskd_refuses_a_folder_elsewhere_not_rerooted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _slskd(tmp_path, monkeypatch, path_in_slskd="") as (client, probe, inbox):
+        # Where the old ``lstrip("/")`` re-root pointed.
+        (inbox / "app" / "downloads" / "Album").mkdir(parents=True)
+        assert _deliver(client, "/app/downloads/Album") == (200, {"status": "ignored"})
+        assert probe._queue.qsize() == 0
+        assert _missed(client) is True
+
+
+def test_a_miss_logs_one_line_naming_both_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A newline in the reported name: ``%r`` keeps it on one line, ``%s`` would
+    # forge a second log record.
+    reported = "/app/downloads2/Al\nbum"
+    with _slskd(tmp_path, monkeypatch, path_in_slskd=_PATH_IN_SLSKD) as (client, _probe, _inbox):
+        caplog.set_level(logging.WARNING, logger="app.api.slskd")
+        assert _deliver(client, reported) == (200, {"status": "ignored"})
+    lines = [r.getMessage() for r in caplog.records if r.name == "app.api.slskd"]
+    assert len(lines) == 1, lines
+    assert repr(reported) in lines[0]
+    assert repr(_PATH_IN_SLSKD) in lines[0]
+    assert "\n" not in lines[0]
+
+
+def test_a_repeated_delivery_enqueues_once_and_not_again_after_the_drain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The claim slskd's ``retry: attempts`` rests on: a re-send is harmless.
+
+    While the folder is queued the dedupe set drops the repeat; once the drain
+    has recorded it in the ledger (folder unchanged) the ledger drops it.
+    """
+    with _slskd(tmp_path, monkeypatch, path_in_slskd=_PATH_IN_SLSKD) as (client, probe, inbox):
+        (inbox / "Album").mkdir()
+        assert _deliver(client, "/app/downloads/Album") == (200, {"status": "queued"})
+        assert _deliver(client, "/app/downloads/Album") == (200, {"status": "queued"})
+        assert probe._queue.qsize() == 1
+        # What the drain does once the import finished (``_process_one``'s tail).
+        folder = probe._queue.get_nowait()
+        assert folder is not None  # ``None`` is the queue's stop sentinel
+        probe._ledger.mark(folder, outcome="imported")
+        probe._finish(str(folder.resolve()), "imported", None)
+        assert probe._dedupe == set()
+        assert _deliver(client, "/app/downloads/Album") == (200, {"status": "queued"})
+        assert probe._queue.qsize() == 0
+        assert probe._dedupe == set()
+
+
+def test_the_miss_flag_does_not_outlive_its_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The reader falls back to False without a lifespan, so a True left on the
+    # shared ``app.state`` would show the next lifespan-less client a miss.
+    with _slskd(tmp_path, monkeypatch, path_in_slskd=_PATH_IN_SLSKD) as (client, _probe, _inbox):
+        assert _deliver(client, "/other/Album")[1] == {"status": "ignored"}
+        assert _missed(client) is True
+    assert _missed(TestClient(app)) is False
+
+
+def test_the_miss_flag_follows_only_messages_that_reach_the_mapping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _slskd(tmp_path, monkeypatch, path_in_slskd=_PATH_IN_SLSKD) as (client, _probe, inbox):
+        (inbox / "Album").mkdir()
+        assert _missed(client) is False  # boot
+
+        assert _deliver(client, "/other/Album")[1] == {"status": "ignored"}
+        assert _missed(client) is True
+        # A wrong secret and auto-import off never reach the mapping: they leave it.
+        assert _deliver(client, "/app/downloads/Album", secret="nope")[0] == 401
+        assert _missed(client) is True
+        # A save answers the flag too, so the panel does not lose the line on save.
+        put = client.put("/api/slskd/settings", json={"auto_import": False})
+        assert put.json()["last_download_missed"] is True
+        assert _deliver(client, "/app/downloads/Album")[1] == {"status": "ignored"}
+        assert _missed(client) is True
+        _configure(client, auto_import=True)
+
+        assert _deliver(client, "/app/downloads/Album")[1] == {"status": "queued"}
+        assert _missed(client) is False
+        assert _deliver(client, "/other/Album", secret="nope")[0] == 401
+        assert _missed(client) is False
+        _configure(client, auto_import=False)
+        assert _deliver(client, "/other/Album")[1] == {"status": "ignored"}
+        assert _missed(client) is False

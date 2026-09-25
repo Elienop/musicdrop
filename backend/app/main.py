@@ -344,6 +344,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.acquisition_queue = acquisition_queue
     app.state.inbox_dir = inbox_dir
     app.state.acquisition_ledger = ledger  # the Review page lists + annotates the inbox backlog
+    # Whether slskd's last webhook missed Path in slskd (``app/api/slskd.py``).
+    app.state.slskd_last_download_missed = False
 
     # Bank reconciliation: rows stuck in "applying" from a mid-apply crash
     # revert to needs_review with a note (never blind-requeued). Being the first
@@ -502,6 +504,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # of building its own. Both attributes are set before the `try`, so the
         # deletes cannot race a half-built lifespan.
         del app.state.artist_image_sources
+        # And the slskd miss flag, whose reader falls back to False: a leaked True
+        # would show a later lifespan-less test a miss it never had.
+        del app.state.slskd_last_download_missed
         # Only what this lifespan created: a secret pre-seeded by the suite
         # must outlive the block, or every test after the first
         # ``with TestClient(app)`` would run against a gate with no key and 401.

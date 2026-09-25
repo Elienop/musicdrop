@@ -17,7 +17,9 @@ import { Switch } from "@/components/ui/switch";
 
 /** The paste-in slskd config that points its completion webhook back at this
  * app. Read-only + copyable — slskd posts to `/api/slskd/webhook` on every
- * finished download, authenticating with the webhook secret set below. */
+ * finished download, authenticating with the webhook secret set below.
+ * `retry.attempts` is slskd's own setting (it tries once by default); it
+ * re-sends a webhook MusicDrop missed while restarting. */
 const WEBHOOK_SNIPPET = `integration:
   webhooks:
     musicdrop:
@@ -26,10 +28,12 @@ const WEBHOOK_SNIPPET = `integration:
         url: http://<musicdrop-host>:3030/api/slskd/webhook  # host must be an IP, or a name listed in MUSICDROP_ALLOWED_HOSTS
         headers:
           - name: X-API-Key
-            value: <your webhook secret>`;
+            value: <your webhook secret>
+      retry:
+        attempts: 10`;
 
 /** Settings → slskd: connect a slskd instance (base URL + write-only API key +
- * the downloads path as slskd sees it), set the shared webhook secret, and flip
+ * Path in slskd, slskd's download folder as slskd sees it), set the shared webhook secret, and flip
  * auto-import so a completed download imports itself. Both secrets are
  * write-only — the API returns only `has_token` / `has_webhook_secret`, so each
  * field shows a "saved" placeholder and is sent only when the user types a
@@ -195,19 +199,26 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
             htmlFor="slskd-downloads-prefix"
             className="text-sm font-medium"
           >
-            Downloads path
+            Path in slskd
           </label>
           <Input
             id="slskd-downloads-prefix"
-            placeholder="/downloads"
+            placeholder="Same as Folder"
             value={downloadsPrefix}
             onChange={(e) => setDownloadsPrefix(e.target.value)}
             className="max-w-md font-mono"
           />
           <p className="text-muted-foreground text-xs">
-            slskd&rsquo;s download root, as slskd sees it; stripped when a
-            completed drop is mapped into the inbox
+            slskd&rsquo;s download folder, as slskd sees it.
           </p>
+          {/* Set by the server when slskd's last webhook named a folder that
+              did not map into slskd's folder here; cleared by the next one
+              that does. Styled as the panel's other error lines. */}
+          {initial.last_download_missed && (
+            <p className="text-destructive text-sm" role="alert">
+              Last download didn&rsquo;t match Path in slskd.
+            </p>
+          )}
         </div>
 
         <div className="flex flex-col gap-1">
@@ -228,9 +239,8 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
             className="max-w-md font-mono"
           />
           <p className="text-muted-foreground text-xs">
-            the shared secret slskd sends as{" "}
-            <code className="font-mono">X-API-Key</code> on each completion
-            webhook
+            The secret slskd sends as{" "}
+            <code className="font-mono">X-API-Key</code> with each webhook.
           </p>
         </div>
 

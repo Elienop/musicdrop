@@ -1,4 +1,4 @@
-"""High-level slskd operations: the connection self-test + path remapping.
+"""High-level slskd operations: the connection self-test + mapping slskd's folder.
 
 The boundary that turns httpx (exception-throwing) into a typed
 ``SlskdConnection`` result. Makes HTTP requests ONLY through ``client.check``
@@ -9,7 +9,7 @@ The boundary that turns httpx (exception-throwing) into a typed
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import httpx
 
@@ -34,13 +34,23 @@ def test_connection(config: SlskdConfig) -> SlskdConnection:
         return SlskdConnection(ok=False, error="Couldn't reach the slskd server.")
 
 
-def remap_to_inbox(local_dir: str, downloads_prefix: str, inbox_dir: Path) -> str:
-    """slskd's container path -> a host path rooted under ``inbox_dir``.
+def remap_to_inbox(local_dir: str, downloads_prefix: str, inbox_dir: Path) -> Path | None:
+    """slskd's reported folder -> the same folder as MusicDrop sees it, or ``None``.
 
-    Strips the configured downloads prefix (slskd's namespace) and re-roots the
-    remainder under the inbox. Purely syntactic — ``contain`` remains the
-    authority that rejects a ``../`` escape after the remap, and ``lstrip('/')``
-    keeps the join from producing an absolute path that ignores the inbox root.
+    ``downloads_prefix`` is "Path in slskd": slskd's download folder as slskd
+    sees it. Empty means both containers see the same path, so the reported
+    folder is used as it is. Set, the reported folder must sit inside it by
+    WHOLE folder names (``PurePosixPath.relative_to`` compares parts and raises
+    on a miss), and the part inside is put under ``inbox_dir``. A miss is
+    ``None``, never re-rooted: ``/app/downloads2/X`` is not inside
+    ``/app/downloads``. Purely syntactic: ``contain`` stays the one check that
+    the result sits strictly inside the inbox once ``..`` and symlinks resolve,
+    which refuses the prefix itself (``.``), a ``..`` part and a symlink out.
     """
-    remainder = local_dir.removeprefix(downloads_prefix) if downloads_prefix else local_dir
-    return str(inbox_dir / remainder.lstrip("/"))
+    if not downloads_prefix:
+        return Path(local_dir)
+    try:
+        inside = PurePosixPath(local_dir).relative_to(PurePosixPath(downloads_prefix))
+    except ValueError:
+        return None
+    return inbox_dir / inside

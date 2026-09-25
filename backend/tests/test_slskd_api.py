@@ -13,6 +13,7 @@ def test_settings_round_trip_redacts_secrets(client: TestClient) -> None:
         "auto_import": False,
         "has_token": False,
         "has_webhook_secret": False,
+        "last_download_missed": False,
     }
 
     r = client.put(
@@ -33,6 +34,7 @@ def test_settings_round_trip_redacts_secrets(client: TestClient) -> None:
         "auto_import": True,
         "has_token": True,
         "has_webhook_secret": True,
+        "last_download_missed": False,
     }
     # Neither secret is ever returned — not as a field, not anywhere in the body.
     assert "token" not in body

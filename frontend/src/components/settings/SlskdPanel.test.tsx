@@ -41,6 +41,7 @@ function settings(overrides: Record<string, unknown> = {}) {
     auto_import: false,
     has_token: false,
     has_webhook_secret: false,
+    last_download_missed: false,
     ...overrides,
   };
 }
@@ -188,6 +189,62 @@ describe("SlskdPanel", () => {
     await screen.findByLabelText(/base url/i);
     expect(screen.getByText(/api\/slskd\/webhook/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /copy/i })).toBeInTheDocument();
+  });
+
+  test("labels the prefix field Path in slskd, with its placeholder and help", async () => {
+    server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
+    renderWithProviders(<SlskdPanel />);
+
+    const field = await screen.findByLabelText("Path in slskd");
+    // Empty is usually right (slskd sees the same path), so the placeholder
+    // names that case instead of showing a path that reads as one to copy.
+    expect(field).toHaveAttribute("placeholder", "Same as Folder");
+    expect(
+      screen.getByText("slskd’s download folder, as slskd sees it."),
+    ).toBeInTheDocument();
+    // The secret's help is split by a <code>, so match the whole paragraph.
+    expect(
+      screen.getByText(
+        (_, el) =>
+          el?.tagName === "P" &&
+          el.textContent === "The secret slskd sends as X-API-Key with each webhook.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test("the webhook snippet sets slskd's own retry beside call:", async () => {
+    server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
+    renderWithProviders(<SlskdPanel />);
+
+    const block = await screen.findByText(/DownloadDirectoryComplete/);
+    const text = block.textContent ?? "";
+    // `retry` is a sibling of `call` (6 spaces), after the headers, with
+    // `attempts` under it (8), spelled as slskd spells it. Nested under
+    // `call:` instead, slskd would not read it and would try only once.
+    expect(text).toContain("\n      call:\n");
+    expect(text).toContain(
+      "            value: <your webhook secret>\n      retry:\n        attempts: 10",
+    );
+  });
+
+  test("says when the last download didn't match Path in slskd", async () => {
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings({ last_download_missed: true }))),
+    );
+    renderWithProviders(<SlskdPanel />);
+
+    expect(
+      await screen.findByText("Last download didn’t match Path in slskd."),
+    ).toBeInTheDocument();
+  });
+
+  test("shows no miss line when the last download matched", async () => {
+    server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
+    renderWithProviders(<SlskdPanel />);
+
+    // Control: the editor has rendered, so an absent line is not a load race.
+    await screen.findByLabelText("Path in slskd");
+    expect(screen.queryByText(/didn.t match Path in slskd/)).not.toBeInTheDocument();
   });
 
   test("points to the Review page for the set-aside backlog (no inline activity)", async () => {

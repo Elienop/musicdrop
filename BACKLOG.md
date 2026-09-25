@@ -1786,6 +1786,20 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `_directive_choice` (`app/beets/import_session.py`) answers each album the run finds with the
   row's one banked decision. slskd writes one level, so its downloads cannot hold a nested
   album; a sweep or Add from folder on a folder holding one can. Not built.
+- **What slskd's retry and Path in slskd leave open (2026-09-26, branch-2 S4 design residuals).**
+  - A MusicDrop restart longer than slskd's retry schedule (about 2.5 minutes with
+    `attempts: 10`) still misses the webhook; the folder waits in "Not imported yet".
+  - A retry that lands after a move import finished runs an import that finds no audio and
+    counts one more imported in "Recently landed" (the move changed the folder's mtime, so
+    the ledger no longer matches).
+  - A wrong webhook secret now costs ten 401s per download, since slskd retries every
+    failure; slskd's log says why.
+  - The stored key and env var keep the old name `downloads_prefix` /
+    `MUSICDROP_SLSKD_DOWNLOADS_PREFIX`, though the field now reads "Path in slskd".
+  - The slskd card's miss line covers a message that did not map; a queued folder whose
+    import later failed still shows only in "Not imported yet" ("Import failed").
+  - `coalesce_album_root` may never fire for slskd's one-level layout; measure it against a
+    real slskd, and a negative result is a delete signal.
 
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth
@@ -2819,8 +2833,15 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   one `lstat` in `_audio_free_entries`' predicate, listing any non-hidden top-level entry not
   already grouped as a zero-track row, covers both (code read).
 
-- **The slskd webhook's remap strips its prefix as text, so a Downloads path outside it imports
-  nothing and reports no failure** (2026-09-14, providers research). `slskd.service.remap_to_inbox`
+- ~~**The slskd webhook's remap strips its prefix as text, so a Downloads path outside it imports
+  nothing and reports no failure**~~ — **CLOSED 2026-09-26** on `feat/sources-add-from-folder`
+  (branch 2, S4). `remap_to_inbox` now matches Path in slskd (still stored as `downloads_prefix`)
+  by whole folder names with `PurePosixPath.relative_to`, and uses the reported folder as it is
+  when the field is empty; a miss answers `200 ignored` with one `%r` line naming both paths,
+  and `GET /api/slskd/settings` carries `last_download_missed` for the panel's line. Pinned in
+  `tests/test_slskd_webhook.py` (`/app/downloads2/X`, `/other/X`, a relative value, the empty
+  field). Search words: remap, removeprefix, downloads_prefix, Path in slskd. The original entry:
+  (2026-09-14, providers research). `slskd.service.remap_to_inbox`
   uses `str.removeprefix`. Measured 2026-09-14 with prefix `/app/downloads`: `/app/downloads2/X` →
   `<inbox>/2/X`, and `/elsewhere/X` (not under the prefix) → `<inbox>/elsewhere/X`;
   `acquisition.inbox.contain(..., strict=True)` accepted both, and accepts a folder that does not
