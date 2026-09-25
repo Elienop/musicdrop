@@ -592,10 +592,12 @@ def rescan_item(
     this rescan just re-read it and blessed a fresh fingerprint) and a
     ``fix_folder`` failure (the folder would not answer — the route
     fingerprinted it and read its audio files before calling this, or it 409ed
-    instead). Every other row KEEPS its status: a rescan disproves nothing
-    else. It emphatically does not un-import the second copy a
-    ``remove_duplicate`` row is waiting on, and an ordinary ``decide_again``
-    failure's banner stays true.
+    instead). A ``fix_folder`` row refused for WHERE its folder is resets too,
+    though nothing was disproved; its next decision fails the same way, with
+    the same sentence (harmless, BACKLOG). Every other row KEEPS its status: a
+    rescan disproves nothing else. It emphatically does not un-import the second
+    copy a ``remove_duplicate`` row is waiting on, and an ordinary
+    ``decide_again`` failure's banner stays true.
     """
     with _LOCK:
         conn = _conn(bank_dir)

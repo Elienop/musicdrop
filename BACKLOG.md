@@ -350,13 +350,15 @@ entry carries a dated correction block where the pass changed it._
      real folder through the existing `resolve_display_path`, 409 when two folders display alike;
      a path with no placeholder reaches beets byte-for-byte as typed. Review-all with one settled
      folder vanished between listing and start was already harmless (pinned, no code).
-     NOT BUILT: a nonexistent path still starts and ends `done` with 0 albums ("a typo looks like
+     NOT BUILT: ~~a nonexistent path still starts and ends `done` with 0 albums ("a typo looks like
      success") — ~22 lines because any new refusal at `start` needs an arm in the acquisition
-     drain (which has no catch-all); importing a Trash ENTRY under `move` files the album and
+     drain (which has no catch-all)~~ (closed in #232: `missing_source_error` refuses it at
+     start); importing a Trash ENTRY under `move` files the album and
      leaves an empty entry listed, importing the Trash ROOT sweeps every trashed album into the
      library and orphans its origin records (noisy, nothing lost); a parent of the library — see
-     the `POST /import` footgun entry, now measured on a POPULATED library. (All three are
-     refused at start since 2026-09-25, `feat/sources-add-from-folder`.) The registry and
+     the `POST /import` footgun entry, now measured on a POPULATED library. (The Trash entry,
+     the Trash root and the parent of the library are all refused at start since 2026-09-25,
+     `feat/sources-add-from-folder`.) The registry and
      runner reach the library through one `cast` (`require_importable_library_root`) because
      `import_jobs/` must not import beets; an adapter-exported `Protocol` with `directory: bytes`
      type-checks against a real `Library` (seat, measured with mypy) and would retire the cast and
@@ -1625,9 +1627,11 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   out (2026-08-30).** ~~(1) `/` and a parent of the library are accepted.~~ — **(1) CLOSED
   2026-09-25** on `feat/sources-add-from-folder` (this branch; design S1, decisions #76/#77).
   Every start now refuses a source that is or holds the library; is, holds or sits in one
-  of MusicDrop's own folders; or is slskd's whole folder, with one of three fixed
+  of MusicDrop's own folders; or is or holds slskd's whole folder, with one of four fixed
   422 sentences (`store_layout.import_source_refusal`, asked in `BeetsImportRunner.validate`
-  after the existence check; walks up, never down). A wide folder that holds none of them
+  after the existence check; walks up, never down). It asks both where a source resolves
+  and the folder beets walks (beets' `normpath` collapses `..` lexically), and compares each
+  protected folder as spelled and as resolved. What it does not see is the next entry. A wide folder that holds none of them
   (`/mnt/bigdisk`) still starts, so (2) below stays open. Distinct from the containment
   ruling recorded under *Accepted residuals* — that ruling is about an **attacker's**
   marginal capability and it stands.
@@ -1676,6 +1680,45 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   candidate count. Explicitly **not** an allowlist: that is the exact remedy the
   2026-07-07 ruling rejected as workflow friction, and the reasoning it gave for ad-hoc
   `/downloads` imports has not changed.
+
+- **The import-start refusal does not see an alias BELOW the source (2026-09-25,
+  `feat/sources-add-from-folder`, design S1 residuals 1-2).** Search words: bind mount,
+  symlink inside a source, import refusal, holds the library. `import_source_refusal` walks UP
+  from the source and from each protected folder, never down, so two shapes pass it:
+  - **A bind-mount alias of the library (or one of ours) inside the source's tree.** Measured by
+    the S1 security seat (L-1) with two real bind mounts under `unshare -rm`: `directory:
+    <root>/music` a bind of `host/media/musicdrop`, and `<root>/media` a bind of `host/media`.
+    The source `<root>/media` is ALLOWED, and beets yields `<root>/media/musicdrop/Artist/Album`,
+    the library's own album. "Is" and "inside" do catch the alias, by identity; only "holds"
+    misses it. Still allowed after fix round 1's two spelling fixes.
+  - **A symlink inside a source that points at the library or an app folder.** beets follows
+    directory links while it walks (`sorted_walk`'s `os.path.isdir`,
+    `beets/util/__init__.py:250`).
+  Why it can wait: both need the operator's own mount or link, and the owner's layout keeps
+  `/data` apart with one `/media` bind mount (server facts 2026-09-15). Future fix, **a new
+  mechanism, not built**: on beets' `import_task_created` (`beets/importer/tasks.py:543-557`; a
+  handler returning `[]` drops the task), drop an album folder that the existing
+  `is_in_library_source` (`app/fsutil.py:372`) or `protected_trees().ids`
+  (`app/beets/protected.py:129`) identify as the library's or ours. It walks up from folders
+  beets already found, so it adds no walk down, and it would also close the window between the
+  start-time check and the walk (security seat I-1).
+
+- **Review all is refused wholesale when slskd's folder holds the library or the beets dir
+  (2026-09-25, S1 code seat).** `settled_folders` lists `music`/`beets` as items of an inbox
+  set to their parent, so every Review all answers "That folder … Pick another." although
+  nothing was picked (probed: `[album, beets]` refused, `[album]` starts). Per-row Review still
+  works, and refusing is the safe side. Fix, **a new mechanism**: leave refused entries out of
+  the listing; S3's shared "not imported yet" rule is the natural home.
+
+- **A bank row refused for WHERE its folder is says "decide again", which cannot succeed
+  (2026-09-25, S1 seats).** The apply runner records `error_recovery="fix_folder"`, the
+  least-wrong of the three values, and the banner reads "Fix the folder or its share, then
+  decide again." (`frontend/src/pages/review/BankReviewPage.tsx:233`). The row's folder cannot
+  change, so every re-decide fails with the same sentence; Rescan also resets the row to
+  `needs_review` on the false premise that the folder answered (`bank/store.py`, the rescan
+  docstring). Harmless: one operator, the same sentence each time. The real remedy is removing
+  the row. A fourth recovery value with a true headline is **a new mechanism**, recorded here,
+  not built.
 
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth

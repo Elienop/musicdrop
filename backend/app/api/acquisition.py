@@ -232,7 +232,8 @@ async def get_acquisition_status(request: Request) -> AcquisitionQueueStatus:
             "model": ErrorDetail,
             "description": (
                 "Every folder handed over no longer exists, or cannot be read, or"
-                " one is or holds the library or MusicDrop's own data."
+                " one is or holds the library, MusicDrop's own data or slskd's"
+                " whole folder."
             ),
         },
         503: _LIBRARY_REFUSED_RESPONSE,
@@ -357,8 +358,8 @@ async def list_inbox_items(request: Request) -> InboxListing:
         # The folder can be removed between this route's own is_dir check and
         # the start; the import refuses rather than filing nothing.
         422: validation_or_detail_422(
-            "The folder no longer exists or cannot be read, or it is or holds the library"
-            " or MusicDrop's own data, or the request failed validation."
+            "The folder no longer exists or cannot be read, or it is or holds the library,"
+            " MusicDrop's own data or slskd's whole folder, or the request failed validation."
         ),
         # The shared refusal PLUS this route's own ambiguous-name guard, which
         # answers with the same status.

@@ -44,7 +44,9 @@ export function useTestSlskd() {
  * {@link throwIfRefused}; a bodyless refusal still surfaces as a plain Error.
  * The 422 (added 2026-09-20) is every folder handed over being gone, OR one of
  * them being there but unreadable — a permissions fault on the share carries
- * its own sentence rather than the plural one. */
+ * its own sentence rather than the plural one — OR (2026-09-25) one of them
+ * being or holding the library, MusicDrop's own data or slskd's folder, which
+ * refuses the whole start with that sentence. */
 export function useReviewInbox() {
   const qc = useQueryClient();
   return useMutation<ReviewInboxResponse, Error, void>({

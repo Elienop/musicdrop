@@ -65,7 +65,7 @@ class ImportSourceRefusedError(Exception):
 
     Its own type, beside the two above: the sentence and the remedy differ (pick
     another folder), and a bank row refused this way cannot be retried by
-    deciding again. The sentence is one of the three in
+    deciding again. The sentence is one of the four in
     ``app.beets.store_layout`` and carries no path.
     """
 
@@ -207,8 +207,8 @@ class ImportRunner(Protocol):
         be stat'd — absent OR there and refused; one missing member of a list
         does NOT refuse the start),
         ``ImportSourceRefusedError`` (a source that is or holds the library; is,
-        holds or sits in one of MusicDrop's own folders; or is slskd's whole
-        folder; one bad member refuses the whole start) and
+        holds or sits in one of MusicDrop's own folders; or is or holds slskd's
+        whole folder; one bad member refuses the whole start) and
         ``InLibraryCopyError`` (copy-mode source inside the library, checked PER
         path, so one bad member refuses the whole start).
 

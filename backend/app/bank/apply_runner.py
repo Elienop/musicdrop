@@ -231,11 +231,12 @@ def _row_error(exc: Exception) -> str:
     string opens. So it refines the ``decide_again`` headline rather than
     repeating it ("check the log FIRST").
 
-    It deliberately does not blame the banked folder. The two paths that refuse
-    BEFORE an import starts - the fingerprint's own EACCES and the start-time
-    refusal - already answer ``fix_folder`` in ``_apply_one``, so what lands
+    It deliberately does not blame the banked folder. The three paths that
+    refuse BEFORE an import starts - the fingerprint's own EACCES, the
+    start-time unreadable refusal and the start-time refusal for WHERE the
+    folder is - already answer ``fix_folder`` in ``_apply_one``, so what lands
     here is whatever is left, and "fix the folder" would be a guess about it.
-    (Only those two were measured. Both gates STAT the folder rather than
+    (Only those three were measured. Every gate STATs the folder rather than
     opening its files, so this does not claim every unreadable-folder fault is
     caught up there.)
     """
@@ -489,11 +490,13 @@ class BankApplyRunner:
                 bank_store.set_status(self._bank_dir, item.id, "stale", error=_STALE_GONE_ERROR)
             return
         except ImportSourceRefusedError as exc:
-            # The row's folder is or holds the library or one of ours, or is
-            # slskd's whole folder (a task collapsed onto it), where one banked
-            # decision would answer for every album there. Its own arm, not the
-            # catch-all: deciding again alone fails identically, so the row asks
-            # for the folder to change first. The sentence carries no path.
+            # The row's folder is or holds the library or one of ours, or is or
+            # holds slskd's whole folder (a task collapsed onto it), where one
+            # banked decision would answer for every album there. Its own arm,
+            # not the catch-all: deciding again fails identically, and
+            # ``fix_folder`` is the least-wrong recovery that exists (its banner
+            # still says "decide again"; removing the row is the real remedy,
+            # recorded in BACKLOG). The sentence carries no path.
             bank_store.set_status(
                 self._bank_dir,
                 item.id,
@@ -676,8 +679,8 @@ class BankApplyRunner:
         those are the only failures whose error tells the user NOT to decide
         again; every other outcome's recovery IS a re-decide, so the banner's
         "decide again to retry" headline stays true. The third recovery
-        (``fix_folder``) is not returned here: the two paths that refuse BEFORE
-        an import starts write it themselves in ``_apply_one``, and this
+        (``fix_folder``) is not returned here: the three paths that refuse
+        BEFORE an import starts write it themselves in ``_apply_one``, and this
         classifies a job that RAN, on what it landed.
 
         Decision-aware, and ``done`` always needs POSITIVE evidence (a

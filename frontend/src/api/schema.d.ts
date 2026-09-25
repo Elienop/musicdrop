@@ -7954,7 +7954,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The source folder does not exist or cannot be read, or a copy-mode import was asked for a folder inside the music library, or the folder is or holds the library or MusicDrop's own data, or it is slskd's whole folder, or the request failed validation. */
+            /** @description The source folder does not exist or cannot be read, or a copy-mode import was asked for a folder inside the music library, or the folder is or holds the library or MusicDrop's own data, or it is or holds slskd's whole folder, or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -11902,7 +11902,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Every folder handed over no longer exists, or cannot be read, or one is or holds the library or MusicDrop's own data. */
+            /** @description Every folder handed over no longer exists, or cannot be read, or one is or holds the library, MusicDrop's own data or slskd's whole folder. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -12036,7 +12036,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The folder no longer exists or cannot be read, or it is or holds the library or MusicDrop's own data, or the request failed validation. */
+            /** @description The folder no longer exists or cannot be read, or it is or holds the library, MusicDrop's own data or slskd's whole folder, or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;

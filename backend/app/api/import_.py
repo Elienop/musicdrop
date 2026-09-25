@@ -254,8 +254,8 @@ def ensure_import_can_start(request: Request) -> None:
         422: validation_or_detail_422(
             "The source folder does not exist or cannot be read, or a copy-mode"
             " import was asked for a folder inside the music library, or the"
-            " folder is or holds the library or MusicDrop's own data, or it is"
-            " slskd's whole folder, or the request failed validation."
+            " folder is or holds the library or MusicDrop's own data, or it is or"
+            " holds slskd's whole folder, or the request failed validation."
         ),
         503: _LIBRARY_REFUSED_RESPONSE,
     },

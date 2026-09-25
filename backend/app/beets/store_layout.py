@@ -21,6 +21,10 @@ Comparisons run on resolved paths and, where both exist, on ``(st_dev, st_ino)``
 — ``resolve()`` collapses symlinks and ``..``, not a bind mount, which is why
 ``app.beets.protected`` asks again at the mover. What this rule does not catch is
 listed in one place, the BACKLOG entry for this slice.
+
+The import-start refusal (:func:`import_source_refusal`) lives here too, because
+it asks the same chain compare through :func:`_stat_id`, the seam the layout
+tests patch; its residuals are in BACKLOG's import-start refusal entry.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from typing import Any, Final, Literal, NamedTuple
 
 import beets
 import confuse
+from beets.util import normpath as beets_normpath
 
 from app.beets.library import LibraryHandle, _music_dir, require_library_present
 from app.beets.protected import ProtectedTrees, protected_entries, protected_trees
@@ -50,6 +55,7 @@ __all__ = [
     "MUSIC_SETTING",
     "ORIGINS_SETTING",
     "SOURCE_HOLDS_APP_DATA",
+    "SOURCE_HOLDS_THE_INBOX",
     "SOURCE_IS_THE_INBOX",
     "SOURCE_IS_THE_LIBRARY",
     "TRASH_SETTING",
@@ -272,17 +278,24 @@ def _relation_of(container: tuple[_Rung, ...], inner: tuple[_Rung, ...]) -> str 
     return "contains" if any(_same_rung(container[0], rung) for rung in inner[1:]) else None
 
 
-#: The three answers an import start refuses a source with, in the order they
+#: The four answers an import start refuses a source with, in the order they
 #: are asked. No path in any: the operator typed or picked the folder.
 SOURCE_IS_THE_LIBRARY: Final = "That folder is your library or holds it. Pick another."
 SOURCE_HOLDS_APP_DATA: Final = "That folder holds MusicDrop’s own data. Pick another."
 SOURCE_IS_THE_INBOX: Final = "That’s slskd’s whole folder. Pick an album inside it."
+SOURCE_HOLDS_THE_INBOX: Final = "That folder holds slskd’s downloads. Pick another."
+_SOURCE_ANSWERS: Final = (
+    SOURCE_IS_THE_LIBRARY,
+    SOURCE_HOLDS_APP_DATA,
+    SOURCE_IS_THE_INBOX,
+    SOURCE_HOLDS_THE_INBOX,
+)
 
 #: How the import refusal reads each :func:`protected_entries` row. ``database``
 #: is only ever "is or holds": ``library.db``'s folder may be the library root,
 #: or a wide folder such as ``/media`` (module docstring), so "inside" it proves
-#: nothing. ``inbox`` is only ever "is": albums inside it are what it is for, and
-#: a folder holding it holds nothing of ours on that account.
+#: nothing. ``inbox`` is only ever "is or holds": albums inside it are what it
+#: is for.
 _SourceRow = tuple[Literal["library", "database", "inbox", "app"], tuple[_Rung, ...]]
 
 
@@ -314,28 +327,75 @@ def _resolved_chain(path: Path) -> tuple[_Rung, ...] | None:
         return None
 
 
+def _spelled_chain(path: Path) -> tuple[_Rung, ...] | None:
+    """:func:`_chain` of ``path`` as spelled, made absolute; ``None`` on a NUL.
+
+    beets keeps a symlinked ``directory:`` as spelled (``lib.directory``) and
+    follows the link while it walks, so a source holding ``/media`` of
+    ``/media/music -> /pool/music`` walks the library by its own spelling while
+    the resolved chain has no ``/media`` rung at all (security seat M-2).
+    """
+    try:
+        return _chain(Path(os.path.abspath(path)))
+    except ValueError:
+        return None
+
+
+def _walked_chain(source: str) -> tuple[_Rung, ...] | None:
+    """:func:`_resolved_chain` of the folder beets will walk for ``source``.
+
+    ``ImportSession`` maps beets' own ``normpath`` over every source
+    (``beets/importer/session.py:79``; ``beets/util/__init__.py:176-182``), which
+    collapses ``..`` LEXICALLY. So ``<media>/link/..`` resolves through the link
+    to wherever it points, and beets walks ``<media>`` (security seat M-1).
+    """
+    try:
+        walked = os.fsdecode(beets_normpath(source))
+    except ValueError:
+        return None
+    return _resolved_chain(Path(walked))
+
+
+def _distinct(
+    chains: Sequence[tuple[_Rung, ...] | None],
+) -> list[tuple[_Rung, ...]]:
+    """The chains that name something, each once."""
+    kept: list[tuple[_Rung, ...]] = []
+    for chain in chains:
+        if chain is not None and chain not in kept:
+            kept.append(chain)
+    return kept
+
+
 def _source_refusal(source: tuple[_Rung, ...], rows: list[_SourceRow]) -> str | None:
     """Which sentence refuses ``source``, or ``None``.
 
     "Is" and "holds" first, for every row but the inbox's: a folder that is or
     holds the library or one of ours is refused wherever it sits, inside slskd's
-    folder included. Then "inside", decided by the NEAREST row met walking up.
+    folder included. Then slskd's folder, "is" before "holds" (``decisions.md``
+    #77 and its addendum). Then "inside", decided by the NEAREST row met walking up.
     """
     held = {kind for kind, chain in rows if kind != "inbox" and _relation_of(source, chain)}
     if "library" in held:
         return SOURCE_IS_THE_LIBRARY
     if held:
         return SOURCE_HOLDS_APP_DATA
-    if any(kind == "inbox" and _same_rung(source[0], chain[0]) for kind, chain in rows):
+    inbox = {_relation_of(source, chain) for kind, chain in rows if kind == "inbox"}
+    if "is" in inbox:
         return SOURCE_IS_THE_INBOX
+    if "contains" in inbox:
+        return SOURCE_HOLDS_THE_INBOX
     return _nearest_container_refusal(source, rows)
 
 
 def _nearest_container_refusal(source: tuple[_Rung, ...], rows: list[_SourceRow]) -> str | None:
-    """Refuse a source whose nearest container is one of ours; the library wins a tie.
+    """Refuse a source whose nearest container is one of ours.
 
     So ``<library>/.trash/x`` is refused while ``<library>/Artist/Album`` and
     ``<inbox>/Album`` are not. ``database`` has no say here (see :data:`_SourceRow`).
+    Two ties at one rung: the library wins over an app folder (playlist exports
+    set to the library root must not refuse every re-import), and an app folder
+    wins over slskd's (an inbox set to the beets dir refuses, the safe side).
     """
     for rung in source[1:]:
         kinds = {kind for kind, chain in rows if _same_rung(chain[0], rung)}
@@ -361,14 +421,19 @@ def import_source_refusal(
 
     Refused: a source that is or holds the music library; is, holds or sits
     inside one of the app's own folders (:func:`protected_entries`, the one list);
-    is or holds ``library.db``'s folder; or IS the inbox, slskd's whole folder.
-    ANY refused member refuses the list, as the copy guard does.
+    is or holds ``library.db``'s folder; or is or holds the inbox, slskd's whole
+    folder. ANY refused member refuses the list, as the copy guard does.
+
+    Each source is asked twice, where it resolves and where the folder beets
+    will walk resolves (:func:`_walked_chain`), and each protected folder is
+    compared as resolved and as spelled (:func:`_spelled_chain`). Refused when
+    either asking refuses; the earlier sentence of :data:`_SOURCE_ANSWERS` wins.
 
     beets refuses no source for where it is (``import_func`` only checks that it
     exists), so this is MusicDrop's. Walks UP, never down: one ``stat`` per rung
-    of each chain. So a source above the OTHER spelling of a bind-mounted
-    protected folder is not seen here: that folder's own ancestors are the ones
-    compared. A residual, not guarded anywhere else for an import.
+    of each chain. So an alias BELOW the source is not seen here: a bind mount of
+    a protected folder inside the source's tree, or a symlink inside the source
+    pointing at one. Both are residuals in BACKLOG's import-start refusal entry.
     """
     music_dir, library_path = lib_music_and_library(lib)
     rows: list[_SourceRow] = []
@@ -380,12 +445,14 @@ def import_source_refusal(
         origins_dir=origins_dir,
         library_path=library_path,
     ):
-        chain = _resolved_chain(path)
-        if chain is not None:
-            rows.append((_source_kind(setting), chain))
+        kind = _source_kind(setting)
+        rows.extend(
+            (kind, chain) for chain in _distinct([_resolved_chain(path), _spelled_chain(path)])
+        )
     for source in sources:
-        chain = _resolved_chain(Path(source))
-        refusal = None if chain is None else _source_refusal(chain, rows)
+        chains = _distinct([_resolved_chain(Path(source)), _walked_chain(source)])
+        found = {_source_refusal(chain, rows) for chain in chains}
+        refusal = next((answer for answer in _SOURCE_ANSWERS if answer in found), None)
         if refusal is not None:
             return refusal
     return None

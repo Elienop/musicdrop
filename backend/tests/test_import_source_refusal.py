@@ -35,6 +35,7 @@ from app.bank.fingerprint import folder_fingerprint
 from app.beets.library import LibraryHandle
 from app.beets.store_layout import (
     SOURCE_HOLDS_APP_DATA,
+    SOURCE_HOLDS_THE_INBOX,
     SOURCE_IS_THE_INBOX,
     SOURCE_IS_THE_LIBRARY,
 )
@@ -158,6 +159,42 @@ def test_a_symlink_to_the_library_is_refused(tmp_path: Path) -> None:
     assert _refusal(layout, link) == SOURCE_IS_THE_LIBRARY
 
 
+def test_a_climb_through_a_link_is_asked_where_beets_walks(tmp_path: Path) -> None:
+    """``<media>/link/..`` resolves through the link; beets walks ``<media>``.
+
+    beets' ``normpath`` collapses ``..`` lexically (``beets/importer/session.py:79``),
+    so the folder beets walks holds the library while the resolved path does not.
+    The link itself, walked where it points, is the control.
+    """
+    layout = _layout(tmp_path)
+    link = layout.root / "media" / "link"
+    link.symlink_to(_folder(layout.root / "elsewhere" / "x"))
+    assert _refusal(layout, link / "..") == SOURCE_IS_THE_LIBRARY
+    assert _refusal(layout, link) is None
+
+
+def test_a_climb_that_resolves_into_the_library_is_still_refused(tmp_path: Path) -> None:
+    """The resolved path is asked too: here it is the library, while beets'
+    spelling is the folder that holds slskd's. The earlier sentence wins."""
+    downloads = tmp_path / "root" / "downloads"
+    layout = _layout(tmp_path, inbox_dir=str(downloads / "slskd"))
+    _folder(downloads / "slskd")
+    link = downloads / "link"
+    link.symlink_to(_folder(layout.music / "Artist"))
+    assert _refusal(layout, link / "..") == SOURCE_IS_THE_LIBRARY
+
+
+def test_a_parent_of_a_symlinked_library_spelling_is_refused(tmp_path: Path) -> None:
+    """``directory: <media>/music`` linked to ``<pool>/music``: beets keeps the
+    spelling and follows the link, so ``<media>`` walks the library's own rows."""
+    pool = _folder(tmp_path / "root" / "pool" / "music")
+    media = _folder(tmp_path / "root" / "media")
+    (media / "music").symlink_to(pool)
+    layout = _layout(tmp_path)
+    assert _refusal(layout, media) == SOURCE_IS_THE_LIBRARY
+    assert _refusal(layout, _folder(media / "music" / "Artist" / "Album")) is None
+
+
 def test_one_refused_member_refuses_the_whole_list(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     fine = _folder(layout.root / "downloads" / "Album")
@@ -222,6 +259,15 @@ def test_an_inbox_equal_to_the_beets_dir_is_refused_as_app_data(tmp_path: Path) 
     assert _refusal(layout, layout.beets) == SOURCE_HOLDS_APP_DATA
 
 
+def test_an_album_in_an_inbox_set_to_the_beets_dir_is_refused_as_app_data(
+    tmp_path: Path,
+) -> None:
+    """An app folder and slskd's at one rung: the refusal wins, the safe side."""
+    layout = _layout(tmp_path, inbox_dir=str(tmp_path / "root" / "data" / "beets"))
+    album = _folder(layout.beets / "Album")
+    assert _refusal(layout, album) == SOURCE_HOLDS_APP_DATA
+
+
 def test_a_link_inside_slskds_folder_into_the_trash_is_refused(tmp_path: Path) -> None:
     """Asked of where the source RESOLVES: its spelled parent is slskd's folder."""
     inbox = tmp_path / "root" / "downloads" / "slskd"
@@ -250,6 +296,14 @@ def test_an_inbox_that_holds_the_library_is_refused_with_the_library_sentence(
     assert _refusal(layout, layout.root / "media") == SOURCE_IS_THE_LIBRARY
 
 
+def test_a_folder_that_holds_slskds_folder_is_refused(tmp_path: Path) -> None:
+    """Owner addendum to #77: half-arrived albums and the race apply to a parent too."""
+    downloads = tmp_path / "root" / "downloads"
+    layout = _layout(tmp_path, inbox_dir=str(downloads / "slskd"))
+    _folder(downloads / "slskd" / "Album")
+    assert _refusal(layout, downloads) == SOURCE_HOLDS_THE_INBOX
+
+
 # ----- allowed: the controls ------------------------------------------------------
 
 
@@ -270,11 +324,11 @@ def test_a_folder_inside_the_default_inbox_still_starts(tmp_path: Path) -> None:
     assert _refusal(layout, album) is None
 
 
-def test_a_parent_of_slskds_folder_that_holds_nothing_else_still_starts(tmp_path: Path) -> None:
+def test_an_album_in_slskds_folder_and_a_sibling_of_it_still_start(tmp_path: Path) -> None:
     downloads = tmp_path / "root" / "downloads"
     layout = _layout(tmp_path, inbox_dir=str(downloads / "slskd"))
-    _folder(downloads / "slskd" / "Album")
-    assert _refusal(layout, downloads) is None
+    assert _refusal(layout, _folder(downloads / "slskd" / "Album")) is None
+    assert _refusal(layout, _folder(downloads / "yubal")) is None
 
 
 def test_an_unrelated_folder_still_starts(tmp_path: Path) -> None:
@@ -283,10 +337,14 @@ def test_an_unrelated_folder_still_starts(tmp_path: Path) -> None:
     assert _refusal(layout, album) is None
 
 
-def test_a_sibling_whose_name_extends_the_librarys_still_starts(tmp_path: Path) -> None:
-    """Whole names, not text: ``/media/music2`` is not inside ``/media/music``."""
+def test_a_sibling_whose_name_extends_the_beets_dirs_still_starts(tmp_path: Path) -> None:
+    """Whole names, not text: ``/data/beets2`` is not inside ``/data/beets``.
+
+    Beside the beets dir rather than the library, because inside the library is
+    allowed anyway and a text-prefix bug there would change no answer.
+    """
     layout = _layout(tmp_path)
-    album = _folder(layout.root / "media" / "music2" / "Album")
+    album = _folder(layout.root / "data" / "beets2" / "Album")
     assert _refusal(layout, album) is None
 
 
@@ -309,6 +367,17 @@ def test_a_folder_inside_the_library_still_starts_when_the_db_sits_in_its_root(
     music.mkdir(parents=True)
     layout = _layout(tmp_path, library_db=str(music / "library.db"))
     album = _folder(music / "Artist" / "Album")
+    assert _refusal(layout, album) is None
+
+
+def test_a_folder_inside_the_library_still_starts_when_the_exports_are_its_root(
+    tmp_path: Path,
+) -> None:
+    """The library and an app folder at one rung: the library wins, or every
+    re-import from inside it would be refused."""
+    music = tmp_path / "root" / "media" / "music"
+    layout = _layout(tmp_path, playlists_export_dir=str(music))
+    album = _folder(layout.music / "Artist" / "Album")
     assert _refusal(layout, album) is None
 
 
