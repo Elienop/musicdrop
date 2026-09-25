@@ -8,7 +8,7 @@ import {
   useSlskdSettings,
   useTestSlskd,
 } from "@/api/useSlskd";
-import { Spinner, Success } from "@/components/icons";
+import { Spinner, Success, Warning } from "@/components/icons";
 import { CopyableSnippet } from "@/components/system/CopyableSnippet";
 import { SettingsSection } from "@/components/system/SettingsSection";
 import { Button } from "@/components/ui/button";
@@ -206,17 +206,34 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
             placeholder="Same as Folder"
             value={downloadsPrefix}
             onChange={(e) => setDownloadsPrefix(e.target.value)}
+            aria-describedby={
+              initial.last_download_missed
+                ? "slskd-downloads-prefix-help slskd-downloads-prefix-missed"
+                : "slskd-downloads-prefix-help"
+            }
             className="max-w-md font-mono"
           />
-          <p className="text-muted-foreground text-xs">
-            slskd&rsquo;s download folder, as slskd sees it.
+          <p
+            id="slskd-downloads-prefix-help"
+            className="text-muted-foreground text-xs"
+          >
+            slskd&rsquo;s download folder
+            {" ("}<code className="font-mono">directories.downloads</code>), as
+            slskd sees it.
           </p>
-          {/* Set by the server when slskd's last webhook named a folder that
-              did not map into slskd's folder here; cleared by the next one
-              that does. Styled as the panel's other error lines. */}
+          {/* Set by the server when the last slskd webhook that reached the
+              mapping named a folder outside slskd's folder here; cleared by
+              the next one that maps. A remembered state, not an event, so no
+              alert role: it matches the Review page's "Last error" line. */}
           {initial.last_download_missed && (
-            <p className="text-destructive text-sm" role="alert">
-              Last download didn&rsquo;t match Path in slskd.
+            <p
+              id="slskd-downloads-prefix-missed"
+              className="text-destructive flex items-start gap-2 text-sm"
+            >
+              <Warning className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+              <span className="min-w-0 break-words">
+                Last download didn&rsquo;t match Path in slskd.
+              </span>
             </p>
           )}
         </div>

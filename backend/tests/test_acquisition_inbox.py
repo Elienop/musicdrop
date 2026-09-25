@@ -89,6 +89,15 @@ def test_contain_rejects_embedded_null_byte(tmp_path: Path) -> None:
     assert contain(str(inbox / "evil\x00album"), inbox) is None
 
 
+def test_contain_rejects_a_symlink_loop(tmp_path: Path) -> None:
+    # Python 3.12's resolve() raises RuntimeError on a loop (3.13: OSError).
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "a").symlink_to(inbox / "b")
+    (inbox / "b").symlink_to(inbox / "a")
+    assert contain(str(inbox / "a"), inbox, strict=True) is None
+
+
 def test_contain_rejects_symlink_escape(tmp_path: Path) -> None:
     inbox = tmp_path / "inbox"
     inbox.mkdir()

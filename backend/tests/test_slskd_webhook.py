@@ -570,6 +570,17 @@ def test_a_symlink_inside_slskds_folder_that_points_out_is_refused(
         assert _missed(client) is True
 
 
+def test_a_symlink_loop_inside_slskds_folder_is_refused_not_a_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _slskd(tmp_path, monkeypatch, path_in_slskd=_PATH_IN_SLSKD) as (client, probe, inbox):
+        (inbox / "a").symlink_to(inbox / "b")
+        (inbox / "b").symlink_to(inbox / "a")
+        assert _deliver(client, "/app/downloads/a") == (200, {"status": "ignored"})
+        assert probe._queue.qsize() == 0
+        assert _missed(client) is True
+
+
 def test_an_empty_path_in_slskd_uses_the_reported_folder_as_it_is(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -650,7 +661,12 @@ def test_the_miss_flag_follows_only_messages_that_reach_the_mapping(
 
         assert _deliver(client, "/other/Album")[1] == {"status": "ignored"}
         assert _missed(client) is True
-        # A wrong secret and auto-import off never reach the mapping: they leave it.
+        # Another event type, a wrong secret and auto-import off never reach the
+        # mapping: they leave it.
+        file_done = {"type": "DownloadFileComplete", "localDirectoryName": "/app/downloads/Album"}
+        other = client.post("/api/slskd/webhook", headers={"X-API-Key": "hook"}, json=file_done)
+        assert other.json() == {"status": "ignored"}
+        assert _missed(client) is True
         assert _deliver(client, "/app/downloads/Album", secret="nope")[0] == 401
         assert _missed(client) is True
         # A save answers the flag too, so the panel does not lose the line on save.

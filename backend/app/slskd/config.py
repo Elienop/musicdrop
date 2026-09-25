@@ -55,7 +55,8 @@ class SlskdConfig(BaseModel):
     # handler (``slskd_webhook`` in app/api/slskd.py) — it reads only
     # ``webhook_secret`` (in its auth dependency), ``auto_import``,
     # ``downloads_prefix``, ``app.state.inbox_dir`` and the queue, and writes only
-    # ``app.state.slskd_last_download_missed``. There is no anonymous path here.
+    # ``app.state.slskd_last_download_missed`` and, when the folder maps, that
+    # folder onto the acquisition queue. There is no anonymous path here.
     base_url: str = ""
     token: str = ""  # the slskd API key
     # "Path in slskd": slskd's download folder as slskd sees it. The name is kept

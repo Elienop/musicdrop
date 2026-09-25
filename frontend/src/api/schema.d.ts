@@ -4907,9 +4907,11 @@ export interface components {
          *     slskd's folder as MusicDrop sees it; empty means both see the same path. A
          *     folder outside it is refused, not re-rooted.
          *
-         *     ``last_download_missed`` is true when slskd's last webhook was refused
-         *     because its folder did not map into slskd's folder, and false once one maps.
-         *     It lives in memory: false after a restart until the next miss.
+         *     ``last_download_missed`` is true when the last slskd webhook that reached the
+         *     mapping was refused because its folder did not map into slskd's folder, and
+         *     false once one maps. Other event types, and deliveries while auto-import is
+         *     off, do not count. It lives in memory: false after a restart until the next
+         *     miss.
          */
         SlskdSettings: {
             /** Base Url */

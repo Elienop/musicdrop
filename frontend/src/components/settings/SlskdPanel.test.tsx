@@ -33,6 +33,8 @@ function stubSecureContext() {
 
 const SETTINGS = `${window.location.origin}/api/slskd/settings`;
 const TEST_URL = `${window.location.origin}/api/slskd/test`;
+/** Path in slskd's help, named by slskd.yml's own key. */
+const HELP = "slskd’s download folder (directories.downloads), as slskd sees it.";
 
 function settings(overrides: Record<string, unknown> = {}) {
   return {
@@ -199,9 +201,11 @@ describe("SlskdPanel", () => {
     // Empty is usually right (slskd sees the same path), so the placeholder
     // names that case instead of showing a path that reads as one to copy.
     expect(field).toHaveAttribute("placeholder", "Same as Folder");
+    // The help is split by a <code> around the key name, so match the paragraph.
     expect(
-      screen.getByText("slskd’s download folder, as slskd sees it."),
+      screen.getByText((_, el) => el?.tagName === "P" && el.textContent === HELP),
     ).toBeInTheDocument();
+    expect(field).toHaveAccessibleDescription(HELP);
     // The secret's help is split by a <code>, so match the whole paragraph.
     expect(
       screen.getByText(
@@ -233,9 +237,15 @@ describe("SlskdPanel", () => {
     );
     renderWithProviders(<SlskdPanel />);
 
-    expect(
-      await screen.findByText("Last download didn’t match Path in slskd."),
-    ).toBeInTheDocument();
+    const line = await screen.findByText("Last download didn’t match Path in slskd.");
+    // A remembered state, not an event: an alert role would be announced on
+    // every visit to Settings.
+    expect(line.closest("p")).not.toHaveAttribute("role");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    // The field it is about is described by its help AND the miss line.
+    expect(screen.getByLabelText("Path in slskd")).toHaveAccessibleDescription(
+      `${HELP} Last download didn’t match Path in slskd.`,
+    );
   });
 
   test("shows no miss line when the last download matched", async () => {
@@ -243,8 +253,13 @@ describe("SlskdPanel", () => {
     renderWithProviders(<SlskdPanel />);
 
     // Control: the editor has rendered, so an absent line is not a load race.
-    await screen.findByLabelText("Path in slskd");
+    const field = await screen.findByLabelText("Path in slskd");
     expect(screen.queryByText(/didn.t match Path in slskd/)).not.toBeInTheDocument();
+    // Only the help describes the field while the line is absent, and no id
+    // it names dangles (a missing id is dropped silently from the description).
+    expect(field).toHaveAccessibleDescription(HELP);
+    const ids = field.getAttribute("aria-describedby")?.split(" ") ?? [];
+    expect(ids.filter((id) => document.getElementById(id) === null)).toEqual([]);
   });
 
   test("points to the Review page for the set-aside backlog (no inline activity)", async () => {

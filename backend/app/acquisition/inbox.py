@@ -61,8 +61,10 @@ def contain(path: str, inbox_dir: Path, *, strict: bool = False) -> Path | None:
     Rejects ``../`` escapes, absolute paths outside the inbox, and symlink
     escapes (``resolve()`` follows the link, so the resolved target is checked).
     Returns ``None`` on any of those, or on an error while resolving — an OS
-    error, or a ``ValueError`` from a malformed input such as an embedded null
-    byte (so a hostile webhook path can never escape as an unhandled 500).
+    error, a ``ValueError`` from a malformed input such as an embedded null
+    byte, or the ``RuntimeError`` Python 3.12's ``resolve()`` raises for a
+    symlink loop (3.13 raises ``OSError``) — so a hostile webhook path can never
+    escape as an unhandled 500.
 
     With ``strict=True`` the inbox ROOT itself is ALSO rejected (only a strict
     descendant passes). A MOVE-import target must be strict: importing the inbox
@@ -71,7 +73,7 @@ def contain(path: str, inbox_dir: Path, *, strict: bool = False) -> Path | None:
     try:
         resolved = Path(path).resolve()
         root = inbox_dir.resolve()
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):
         return None
     if root in resolved.parents:
         return resolved

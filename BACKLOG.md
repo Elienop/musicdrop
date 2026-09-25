@@ -1800,6 +1800,23 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     import later failed still shows only in "Not imported yet" ("Import failed").
   - `coalesce_album_root` may never fire for slskd's one-level layout; measure it against a
     real slskd, and a negative result is a delete signal.
+  - The miss line stays up after Path in slskd is fixed and saved, until the next download
+    maps; beside a green "slskd settings saved." it reads as the fix having failed. Clearing
+    it on a save that changes the field is the owner's call (the S4 addendum says "cleared by
+    the next message that matches").
+  - The line says a download missed but not which folder slskd sent. Sending that folder
+    instead of a bool would tell the user what to type; the field is unreleased, so this is
+    cheapest now.
+  - A Path in slskd that is a PARENT of slskd's folder (`/`, or `/app` when slskd uses
+    `/app/downloads`) maps to a folder that does not exist: it is queued with no miss line, and
+    the drain later fails it as "is no longer there". An existence check would false-alarm on
+    the retry-after-move residual above, so it needs design.
+  - A peer-named `.` or `..` leaf is refused but lights the miss line (a harmless
+    misattribution).
+  - `localDirectoryName` has no length cap, and `remap_to_inbox` is quadratic in the part
+    count and runs on the event loop (~1.8 s at 62 KB; secret holders only). Pydantic's
+    `StringConstraints(max_length=…)` is the engine answer, as `StartImportRequest.path` in
+    `backend/app/models/import_api.py` already does.
 
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth
@@ -2835,25 +2852,17 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**The slskd webhook's remap strips its prefix as text, so a Downloads path outside it imports
   nothing and reports no failure**~~ — **CLOSED 2026-09-26** on `feat/sources-add-from-folder`
-  (branch 2, S4). `remap_to_inbox` now matches Path in slskd (still stored as `downloads_prefix`)
-  by whole folder names with `PurePosixPath.relative_to`, and uses the reported folder as it is
+  (branch 2, S4; found 2026-09-14). `str.removeprefix` re-rooted `/app/downloads2/X` to
+  `<inbox>/2/X`. `remap_to_inbox` now matches Path in slskd (still stored as `downloads_prefix`)
+  by whole folder names with `PurePosixPath.relative_to` and uses the reported folder as it is
   when the field is empty; a miss answers `200 ignored` with one `%r` line naming both paths,
-  and `GET /api/slskd/settings` carries `last_download_missed` for the panel's line. Pinned in
-  `tests/test_slskd_webhook.py` (`/app/downloads2/X`, `/other/X`, a relative value, the empty
-  field). Search words: remap, removeprefix, downloads_prefix, Path in slskd. The original entry:
-  (2026-09-14, providers research). `slskd.service.remap_to_inbox`
-  uses `str.removeprefix`. Measured 2026-09-14 with prefix `/app/downloads`: `/app/downloads2/X` →
-  `<inbox>/2/X`, and `/elsewhere/X` (not under the prefix) → `<inbox>/elsewhere/X`;
-  `acquisition.inbox.contain(..., strict=True)` accepted both, and accepts a folder that does not
-  exist (`Path.resolve()` is non-strict). The webhook then answers `queued`:
-  `coalesce_album_root` returns a non-disc folder unchanged, `enqueue` passes (the ledger's `seen`
-  is False for a folder it cannot stat), and the drain move-imports the missing path. Measured
-  here with a real `BeetsImportRunner` (move, unattended) on a missing inbox folder: `on_finish`,
-  no error. So the job ends `done` with nothing set aside, and the queue records `imported` and
-  marks the ledger with an empty identity (code read). If a folder does exist at the remapped
-  path, that one is imported instead. Why now: after a mount change, a Downloads path that no
-  longer matches fails silently. Fix shape: match whole path segments, and refuse a path outside
-  the prefix with one log line naming both paths.
+  and `GET /api/slskd/settings` carries `last_download_missed` for the panel's line. Pinned by
+  `test_remap_to_inbox_maps_by_whole_folder_names` and
+  `test_remap_to_inbox_refuses_a_folder_outside_path_in_slskd` (`tests/test_slskd_service.py`),
+  and `test_a_folder_that_does_not_map_is_refused_not_rerooted`,
+  `test_an_empty_path_in_slskd_refuses_a_folder_elsewhere_not_rerooted` and
+  `test_a_miss_logs_one_line_naming_both_paths` (`tests/test_slskd_webhook.py`). Search words:
+  remap, removeprefix, downloads_prefix, Path in slskd.
 
 - **A duplicate resolve that faults part-way drops the earlier albums' rows and keeps the
   rest.** (Found 2026-09-12 on `fix/descriptor-anchored-library-writes`; security seat L-2,
