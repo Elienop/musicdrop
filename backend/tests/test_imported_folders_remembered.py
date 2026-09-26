@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from fastapi.testclient import TestClient
 
-from app.acquisition.inbox import record_imported
+from app.acquisition.inbox import count_pending, record_imported
 from app.acquisition.ledger import AcquisitionLedger
 from app.acquisition.queue import AcquisitionQueue
 from app.bank import store
@@ -235,28 +235,169 @@ def test_review_all_records_only_the_folder_whose_album_landed(
     assert _rows(ledger) == {str(landed): "imported"}
 
 
-def test_a_ledger_that_cannot_be_written_leaves_the_run_done(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+def test_a_ledger_that_cannot_be_written_leaves_the_run_done_and_the_folder_listed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The folder simply stays listed, the safe side; the run is not failed for it."""
+    """The real ledger, whose file is a directory: the write fails (``OSError``),
+    the run is still ``done``, and the folder stays listed, as the log says."""
     inbox = _inbox(tmp_path)
-    folder = _album(inbox, "Unwritten")
-    reg, finished = _wire(
-        FakeImportRunner(applied=[_landed(0, folder)]),
-        AcquisitionLedger(inbox / ".musicdrop-ledger.json"),
-        inbox,
-    )
+    _album(inbox, "Unwritten")
+    (inbox / ".musicdrop-ledger.json").mkdir()
+    ledger = AcquisitionLedger(inbox / ".musicdrop-ledger.json")
+    folder = inbox / "Unwritten"
+    _reg, finished = _wire(FakeImportRunner(applied=[_landed(0, folder)]), ledger, inbox)
+    _on_state(monkeypatch, inbox, ledger)
+    client = TestClient(app)
 
-    def refuse(_folders: list[str]) -> None:
-        raise PermissionError(13, "Permission denied")
-
-    reg.attach_import_recorder(refuse)
     with caplog.at_level("WARNING", logger="uvicorn.error"):
-        job_id = reg.start(str(folder))
-        finished.wait()
+        job_id = _review_one(client, "Unwritten", finished)
+
+    assert _reg.state(job_id).phase == "done"
+    assert "could not record the imported folders; they stay listed" in caplog.text
+    assert ledger.entries() == []
+    assert _listed(client) == {"Unwritten"}
+
+
+def _surrogate_album(inbox: Path) -> Path:
+    """A settled album folder whose name is not valid UTF-8 (``Caf\\xe9``)."""
+    folder = Path(os.fsdecode(os.fsencode(inbox) + b"/Caf\xe9"))
+    folder.mkdir()
+    (folder / "01 track.flac").write_bytes(b"\0")
+    for path in (folder / "01 track.flac", folder):
+        os.utime(path, (_SETTLED, _SETTLED))
+    return folder
+
+
+class _LandsEach(FakeImportRunner):
+    """Lands one album from each folder it is handed, whichever run it is."""
+
+    def run(
+        self,
+        paths: list[str],
+        bridge: ImportBridge,
+        on_finish: Callable[[], None],
+        on_error: Callable[[str], None],
+        options: ImportOptions | None = None,
+        directive: object = None,
+    ) -> None:
+        self._applied = [_landed(index, Path(path)) for index, path in enumerate(paths)]
+        super().run(paths, bridge, on_finish, on_error, options=options)
+
+
+def _listed(client: TestClient) -> set[str]:
+    return {item["name"] for item in client.get("/api/acquisition/inbox/items").json()["items"]}
+
+
+def test_a_folder_the_ledger_cannot_store_stays_listed_and_poisons_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A name that is not valid UTF-8 fails the ledger's JSON encode (a
+    ``ValueError``). The run ends ``done`` and sends its refresh event, the
+    folder stays listed, and the next folder is recorded as usual."""
+    inbox = _inbox(tmp_path)
+    odd = _surrogate_album(inbox)
+    ledger = AcquisitionLedger(inbox / ".musicdrop-ledger.json")
+    reg, finished = _wire(_LandsEach(), ledger, inbox)
+    _on_state(monkeypatch, inbox, ledger)
+    client = TestClient(app)
+    (shown,) = _listed(client)
+
+    with caplog.at_level("WARNING", logger="uvicorn.error"):
+        job_id = _review_one(client, shown, finished)
 
     assert reg.state(job_id).phase == "done"
-    assert "could not record the imported folders" in caplog.text
+    assert reg.state(job_id).progress.applied == 1
+    assert "they stay listed" in caplog.text
+    assert ledger.entries() == []
+    assert _listed(client) == {shown}
+
+    later = _album(inbox, "Later")
+    _reg, finished = _wire(_LandsEach(), ledger, inbox)
+    _review_one(client, "Later", finished)
+    assert _rows(ledger) == {str(later): "imported"}
+    assert _listed(client) == {shown}
+    assert odd.is_dir()
+
+
+def test_one_folder_the_ledger_cannot_store_does_not_cost_its_run_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review all hands both over in one run, the odd name first (by name)."""
+    inbox = _inbox(tmp_path)
+    odd = _surrogate_album(inbox)
+    zed = _album(inbox, "Zed")
+    ledger = AcquisitionLedger(inbox / ".musicdrop-ledger.json")
+    runner = _LandsEach()
+    _reg, finished = _wire(runner, ledger, inbox)
+    _on_state(monkeypatch, inbox, ledger)
+    client = TestClient(app)
+
+    assert client.post("/api/acquisition/review-inbox").json()["pending"] == 2
+    finished.wait()
+
+    assert runner.received_paths == [str(odd), str(zed)]
+    assert _rows(ledger) == {str(zed): "imported"}
+    assert len(_listed(client)) == 1
+
+
+def test_the_drain_carries_on_past_a_folder_the_ledger_cannot_store(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    inbox = _inbox(tmp_path)
+    odd = _surrogate_album(inbox)
+    plain = _album(inbox, "Plain")
+    ledger = AcquisitionLedger(inbox / ".musicdrop-ledger.json")
+    reg, _finished = _wire(_LandsEach(), ledger, inbox)
+    queue = AcquisitionQueue(
+        import_registry=reg, ledger=ledger, inbox_dir=inbox, poll_interval=0.01
+    )
+    queue.start()
+    try:
+        with caplog.at_level("WARNING"):
+            queue.enqueue(odd)
+            queue.enqueue(plain)
+            _wait_for(lambda: queue.status().processed == 2)
+    finally:
+        queue.stop(timeout=2.0)
+
+    assert (queue.status().processed, queue.status().failed) == (2, 0)
+    assert "inbox drain: could not record" in caplog.text
+    assert _rows(ledger) == {str(plain): "imported"}
+    assert count_pending(inbox, ledger, held=frozenset()) == 1
+
+
+def _wait_for(predicate: Callable[[], bool]) -> None:
+    deadline = time.monotonic() + 5.0
+    while not predicate():
+        assert time.monotonic() < deadline, "the drain never got there"
+        time.sleep(0.01)
+
+
+def test_a_drain_run_that_fed_no_album_never_hides_its_folder(tmp_path: Path) -> None:
+    """beets drops a file it cannot read without a word, so the run ends ``done``
+    with an empty feed. Recorded ``failed``, not ``imported``: listed with its
+    note, counted as failed, and the same webhook again is still a no-op."""
+    inbox = _inbox(tmp_path)
+    unread = _album(inbox, "Unreadable")
+    ledger = AcquisitionLedger(inbox / ".musicdrop-ledger.json")
+    reg, _finished = _wire(FakeImportRunner(applied=[]), ledger, inbox)
+    queue = AcquisitionQueue(
+        import_registry=reg, ledger=ledger, inbox_dir=inbox, poll_interval=0.01
+    )
+    queue.start()
+    try:
+        queue.enqueue(unread)
+        _wait_for(lambda: queue.status().processed == 1)
+    finally:
+        queue.stop(timeout=2.0)
+
+    status = queue.status()
+    assert (status.failed, status.set_aside) == (1, 0)
+    assert status.error == "beets found no album it could read in this folder."
+    assert _rows(ledger) == {str(unread): "failed"}
+    assert count_pending(inbox, ledger, held=frozenset()) == 1
+    queue.enqueue(unread)
+    assert queue.status().queued == 0
 
 
 def test_a_folder_with_one_album_skipped_records_nothing(
@@ -300,6 +441,33 @@ def test_add_from_folder_records_a_slskd_folder_and_leaves_any_other_alone(
     assert client.post("/api/import", json={"path": f"{inside}/"}).status_code == 202
     finished.wait()
     assert _rows(ledger) == {str(inside): "imported"}
+
+
+def test_add_from_folder_records_the_folder_beets_read_not_the_spelling_typed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``<elsewhere>/link/../Y`` with ``link`` -> ``<inbox>/sub``: beets collapses
+    the ``..`` lexically and reads ``<elsewhere>/Y``, while the typed spelling
+    resolves through the link to ``<inbox>/Y``, which nobody imported."""
+    inbox = _inbox(tmp_path)
+    never = _album(inbox, "Y")
+    (inbox / "sub").mkdir()
+    elsewhere = tmp_path.resolve() / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "link").symlink_to(inbox / "sub")
+    walked = _album(elsewhere, "Y")
+    typed = f"{elsewhere}/link/../Y"
+    assert Path(typed).resolve() == never
+    ledger = AcquisitionLedger(inbox / ".musicdrop-ledger.json")
+    _reg, finished = _wire(FakeImportRunner(applied=[_landed(0, walked)]), ledger, inbox)
+    _on_state(monkeypatch, inbox, ledger)
+    client = TestClient(app)
+
+    assert client.post("/api/import", json={"path": typed}).status_code == 202
+    finished.wait()
+
+    assert ledger.entries() == []
+    assert _listed(client) == {"Y"}
 
 
 def _apply_one(
@@ -525,12 +693,13 @@ def test_the_lifespan_attaches_the_recorder(
 def test_a_beets_tag_write_through_a_hardlink_leaves_the_folder_identity(
     tmp_path: Path,
 ) -> None:
-    """#52: the record survives a tag write because the file is rewritten IN
-    PLACE. beets writes through ``Item.write`` -> ``MediaFile.save``, which
-    mutagen does on the open file. A ``mediafile``/``mutagen`` that switched to
-    write-a-temp-and-rename would add and remove an entry in the download's
-    folder, move its mtime and relist every kept folder after each tag write:
-    this fails first.
+    """#52: a tag write through the library's name reaches the download and
+    leaves its folder's identity alone. beets writes through ``Item.write`` ->
+    ``MediaFile.save``, which mutagen does IN PLACE on the open file, so the new
+    bytes land in the one inode both names share. A ``mediafile``/``mutagen``
+    that switched to write-a-temp-and-rename would rename in the LIBRARY folder:
+    the download's folder would not move, but the library name would get a new
+    inode and the download would keep its old tags. The inode assert fails first.
     """
     from beets.library import Item
 

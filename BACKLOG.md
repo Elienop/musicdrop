@@ -1863,11 +1863,22 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     `false`). Not built.
   - An ignored row stays `Ignored` in the bank after its folder is imported from "Not imported
     yet".
-  - A history-skipped album (a manual hardlink run with history on) emits no feed row, so a
-    folder whose other albums landed is recorded; the skipped one was already imported.
+  - A history-skipped album (a hardlink run from Add from folder, history on) emits no feed row,
+    so a folder whose other albums landed is recorded; the skipped one was already imported.
   - Upgrade: an install on the old starter's `copy: yes` + `move: no` copies slskd downloads from
-    S6 on, and its disk use grows; Keep downloads off moves. README carries it; the release note
-    must too.
+    S6 on, and its disk use grows; Keep downloads on, then off, moves (on `copy: yes` the switch
+    already reads off). README carries it; the release note must too.
+  - A file that lands in a folder DURING its import is hidden with it: the identity is taken when
+    the run finishes (`AcquisitionLedger.mark`). Under move with Review (the owner's setup) that
+    leftover was listed before S6. In the drain, the late file's webhook is dropped by the
+    in-flight dedupe (`AcquisitionQueue.enqueue`) and both writers record the new identity, so
+    nothing surfaces it. Identity at start breaks in place, where fetchart writes `cover.jpg`
+    into the source folder (`beets/library/models.py` ~550-606); the exact rule ("no audio name
+    that was not there at start") needs new state. Owner's call.
+  - A folder whose name is not valid UTF-8 is never remembered (the ledger's JSON cannot hold
+    it); it stays listed.
+  - The slskd card's Change link, like its Review link, drops an unsaved auto-import flip.
+    react-router's `useBlocker` is the engine answer (the app uses a data router). Not built.
 
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth

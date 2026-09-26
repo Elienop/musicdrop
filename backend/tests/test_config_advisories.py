@@ -361,15 +361,15 @@ def test_a_filing_flag_every_import_honours_has_no_advisory() -> None:
 
 
 def test_the_hardlink_advisory_is_only_the_history_it_forces() -> None:
-    """What a hardlink still changes in the app: a manual hardlink run turns
-    beets' import history on (``run_import_worker``), and `incremental: no`
-    beside it fires no rule of its own, so the hardlink advisory is where it is
-    said, and all it says."""
+    """What a hardlink still changes in the app: a hardlink run from Add from
+    folder turns beets' import history on (``run_import_worker``), and
+    `incremental: no` beside it fires no rule of its own, so the hardlink
+    advisory is where it is said, and all it says."""
     (hardlink,) = _advise("import:\n  hardlink: yes\n  incremental: no\n")
     assert hardlink.key == "import.hardlink"
     assert hardlink.message.startswith(
-        "A manual hardlink import turns beets' import history on, so a kept folder"
-        " added again is skipped."
+        "A hardlink import from Add from folder turns beets' import history on, so a"
+        " kept folder added again is skipped."
     )
     assert "Inbox" not in hardlink.message
     assert "Trash restore" not in hardlink.message

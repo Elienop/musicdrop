@@ -2305,16 +2305,25 @@ def is_cross_device_hardlink(exc: FilesystemError) -> bool:
     return exc.verb == "link" and isinstance(cause, OSError) and cause.errno == errno.EXDEV
 
 
+def source_as_walked(source: str) -> str:
+    """The folder beets walks for ``source``, a path an import was started with.
+
+    The session holds every source through beets' own ``normpath``
+    (``importer/session.py:79``), which collapses ``..`` LEXICALLY: typed
+    ``<a>/link/../Y`` walks ``<a>/Y`` wherever ``link`` points.
+    """
+    return os.fsdecode(normpath(os.fsencode(source)))
+
+
 def album_folder_under_source(folder: str, source: str) -> bool:
     """Whether a feed row's ``folder`` is ``source`` or inside it, by whole names.
 
-    ``source`` is a path an import was started with, spelled as the caller
-    passed it; the session holds it through beets' own ``normpath``
-    (``importer/session.py:79``), and every feed folder is derived from those
-    (``WebImportSession._task_folder``), so ``source`` is normalised the same
-    way before the compare. A trailing slash on a typed path still matches.
+    ``source`` is spelled as the caller passed it; every feed folder is derived
+    from the walked form (``WebImportSession._task_folder``), so the compare is
+    against :func:`source_as_walked`. A trailing slash on a typed path still
+    matches.
     """
-    top = os.fsdecode(normpath(os.fsencode(source)))
+    top = source_as_walked(source)
     return folder == top or folder.startswith(top + os.sep)
 
 

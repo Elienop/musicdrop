@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.beets.import_mapping import embedded_art
-from app.beets.import_session import ImportBridge, album_folder_under_source
+from app.beets.import_session import ImportBridge, album_folder_under_source, source_as_walked
 from app.config import Settings
 from app.events.broker import EventBroker
 from app.import_jobs.runner import BeetsImportRunner, ImportRunner
@@ -423,7 +423,8 @@ class ImportJobRegistry:
 
     @staticmethod
     def _fully_landed_sources(job: ImportJob) -> list[str]:
-        """The start folders whose every album in the feed landed (caller holds the lock).
+        """The start folders, as beets walked them, whose every album in the feed
+        landed (caller holds the lock).
 
         Only for a run that finished ``done`` and was not cut short: a stop that
         aborted may have ended the run before a folder's next album was reached,
@@ -444,22 +445,27 @@ class ImportJobRegistry:
                 if album_folder_under_source(row.outcome.folder, source)
             ]
             if verdicts and all(verdicts):
-                fully_landed.append(source)
+                # The folder beets read, not the spelling typed: through a
+                # link, ``<a>/link/../Y`` resolves to a folder never imported.
+                fully_landed.append(source_as_walked(source))
         return fully_landed
 
     def _record_imported(self, folders: list[str]) -> None:
         """Hand ``folders`` to the attached recorder; a failed write is logged.
 
-        Worker thread, outside the lock. A write that fails leaves the folder
-        listed under "Not imported yet", the safe side, so the finished run is
-        not failed for it.
+        Worker thread, outside the lock and outside the runner's broad
+        ``except``, so anything raised here would end the thread before the
+        refresh event. A write that fails (``OSError``) or a row the ledger
+        cannot store (``ValueError``: a name that is not valid UTF-8) leaves the
+        folder listed under "Not imported yet", the safe side, so the finished
+        run is not failed for it.
         """
         recorder = self._recorder
         if recorder is None:
             return
         try:
             recorder(folders)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             operator_logger.warning(
                 "import: could not record the imported folders; they stay listed (%r)", exc
             )

@@ -36,7 +36,7 @@ const TEST_URL = `${window.location.origin}/api/slskd/test`;
 const IMPORT_OP_URL = `${window.location.origin}/api/config/import-operation`;
 /** The auto-import switch's help, as the switch reads it. */
 const AUTO_IMPORT_HELP =
-  "when on, a finished slskd download imports itself into the library; uncertain matches are set aside for review";
+  "When on, a finished slskd download imports itself into the library; uncertain matches are set aside for review.";
 /** Path in slskd's help, named by slskd.yml's own key. */
 const HELP = "slskd’s download folder (directories.downloads), as slskd sees it.";
 

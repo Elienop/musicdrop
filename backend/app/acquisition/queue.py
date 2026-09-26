@@ -39,6 +39,9 @@ logger = logging.getLogger(__name__)
 #: Why a stopped inbox import is recorded as failed rather than imported.
 _STOPPED_BEFORE_FINISH = "The import was stopped before this folder finished."
 
+#: Why a run that fed no album is recorded as failed rather than imported.
+_NO_ALBUM_FOUND = "beets found no album it could read in this folder."
+
 
 class AcquisitionQueue:
     """Thread-safe FIFO that serially imports inbox folders, deferring on a busy gate."""
@@ -226,8 +229,10 @@ class AcquisitionQueue:
         outcome, error = result
         try:
             self._ledger.mark(folder, outcome=outcome)
-        except OSError:
-            pass  # best-effort; never crash the drain on a ledger write
+        except (OSError, ValueError) as exc:
+            # Best-effort: an unwritable ledger, or a name that is not valid
+            # UTF-8, must never end this thread. The folder is simply unrecorded.
+            logger.warning("inbox drain: could not record %r; it stays listed (%r)", folder, exc)
         self._finish(key, outcome, error)
 
     def _defer(self, folder: Path, *, error: str | None) -> None:
@@ -316,6 +321,12 @@ class AcquisitionQueue:
         # is never a decision.
         if state.set_aside > 0 or state.progress.skipped > 0:
             return ("set_aside", None)
+        # beets drops a file it cannot read without a word, so a run can end
+        # ``done`` having fed no album at all. ``imported`` hides a folder, and
+        # only a run whose albums landed may write it (the recorder's rule), so
+        # this one is ``failed``: listed, annotated, counted as failed.
+        if not state.albums:
+            return ("failed", _NO_ALBUM_FOUND)
         return ("imported", None)
 
     @staticmethod

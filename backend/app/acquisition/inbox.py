@@ -95,12 +95,21 @@ def record_imported(ledger: AcquisitionLedger, inbox_dir: Path, folders: list[st
     ``contain(strict=True)`` admits are kept. Each is keyed on its resolved path,
     which is how the list spells an entry, with its identity at this moment, so
     ``_not_imported_yet`` hides it until an entry is added, removed or renamed
-    in it. ``mark`` raises ``OSError`` when the ledger cannot be written.
+    in it. A folder ``mark`` refuses (``OSError``: the ledger cannot be written;
+    ``ValueError``: a name that is not valid UTF-8) stays listed, and the rest
+    are still recorded; the first refusal is raised once all were tried.
     """
+    refused: OSError | ValueError | None = None
     for folder in folders:
         contained = contain(folder, inbox_dir, strict=True)
-        if contained is not None:
+        if contained is None:
+            continue
+        try:
             ledger.mark(contained, outcome="imported")
+        except (OSError, ValueError) as exc:
+            refused = refused or exc
+    if refused is not None:
+        raise refused
 
 
 def coalesce_album_root(folder: Path, inbox_dir: Path) -> Path:

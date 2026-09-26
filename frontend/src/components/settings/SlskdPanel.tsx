@@ -291,8 +291,8 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
               Auto-import completed downloads
             </label>
             <p id={AUTO_IMPORT_HELP_ID} className="text-muted-foreground text-xs">
-              when on, a finished slskd download imports itself into the
-              library; uncertain matches are set aside for review
+              When on, a finished slskd download imports itself into the
+              library; uncertain matches are set aside for review.
             </p>
             {/* What an import does with the files, from the operation beets
                 loaded. Nothing while it loads or if it can't be read: a guess
@@ -321,7 +321,10 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
 
         <p className="text-muted-foreground border-t pt-4 text-sm">
           Set-aside downloads and imports needing a decision appear in{" "}
-          <Link to="/review" className="text-foreground underline">
+          <Link
+            to="/review"
+            className="text-foreground focus-ring rounded-sm underline"
+          >
             Review
           </Link>
           .

@@ -306,9 +306,10 @@ def _incremental_advisory(section: ImportSection) -> str | None:
         return None
     return (
         "MusicDrop honours import.incremental: a folder in beets' import history is"
-        " skipped and counted as already known. A sweep or a hardlink import forces it"
-        " on and sets incremental_skip_later itself; a bank apply, slskd's imports and"
-        " Import them again force it off. `beet import` behaves the same way."
+        " skipped and counted as already known. A sweep, or a hardlink import from Add"
+        " from folder, forces it on and sets incremental_skip_later itself; a bank apply,"
+        " slskd's imports and Import them again force it off. `beet import` behaves the"
+        " same way."
     )
 
 
@@ -331,14 +332,15 @@ def _delete_advisory(section: ImportSection) -> str | None:
 def _hardlink_advisory(section: ImportSection) -> str | None:
     # Every import honours the file operation since slskd's follow the config
     # (decisions #77), so ``hardlink`` itself is not overridden. What is: a
-    # manual hardlink run forces the history keys (``run_import_worker``), and an
-    # ``incremental: no`` beside it fires no rule of its own, so it is said here.
+    # hardlink run from Add from folder forces the history keys
+    # (``run_import_worker``), and an ``incremental: no`` beside it fires no
+    # rule of its own, so it is said here.
     if not section.hardlink:
         return None
     return (
-        "A manual hardlink import turns beets' import history on, so a kept folder"
-        " added again is skipped. `beet import` from the command line leaves history"
-        " to your config."
+        "A hardlink import from Add from folder turns beets' import history on, so a"
+        " kept folder added again is skipped. `beet import` leaves history to your"
+        " config."
     )
 
 
@@ -358,10 +360,10 @@ def _hardlink_advisory(section: ImportSection) -> str | None:
 #:
 #: ``link``/``hardlink``/``reflink`` are HONOURED by every import, slskd's
 #: included (decisions #77), so ``link`` and ``reflink`` have no rule; ``hardlink``
-#: has one only for the history keys a manual hardlink run forces. Trash restore
-#: names its own operation, but for a restore, not an import. A config with every
-#: file operation off has no rule at all — beets imports in place, which is its
-#: own behaviour with no override to name. What each import resolved to is
+#: has one only for the history keys an Add from folder hardlink run forces.
+#: Trash restore names its own operation, but for a restore, not an import. A
+#: config with every file operation off has no rule at all — beets imports in
+#: place, which is its own behaviour with no override to name. What each import resolved to is
 #: LOGGED by ``run_import_worker``.
 _IMPORT_ADVISORY_RULES: Final[tuple[tuple[str, Callable[[ImportSection], str | None]], ...]] = (
     ("autotag", _autotag_advisory),

@@ -72,19 +72,26 @@ class AcquisitionLedger:
             return any(e.path == key and e.mtime == mtime and e.size == size for e in self._entries)
 
     def mark(self, folder: Path, *, outcome: LedgerOutcome) -> None:
-        """Record ``folder``'s current identity + outcome, replacing any prior entry."""
+        """Record ``folder``'s current identity + outcome, replacing any prior entry.
+
+        Raises ``OSError`` when the file cannot be written, and ``ValueError``
+        when the row cannot be stored (a folder name that is not valid UTF-8
+        fails the JSON encode). Either way nothing changes, in memory too: a
+        row kept in memory but never written would fail every later ``mark``.
+        """
         identity = self._identity(folder)
         mtime, size = identity if identity is not None else (0.0, 0)
         entry = LedgerEntry(path=str(folder), mtime=mtime, size=size, outcome=outcome)
         with self._lock:
-            self._entries = [e for e in self._entries if e.path != entry.path]
-            self._entries.append(entry)
-            self._persist()
+            entries = [e for e in self._entries if e.path != entry.path]
+            entries.append(entry)
+            self._persist(entries)
+            self._entries = entries
 
     def entries(self) -> list[LedgerEntry]:
         with self._lock:
             return list(self._entries)
 
-    def _persist(self) -> None:
+    def _persist(self, entries: list[LedgerEntry]) -> None:
         # Caller holds the lock. Reuse the shared atomic-write recipe (0o644).
-        write_atomic_text(self._path, _LedgerFile(entries=self._entries).model_dump_json(indent=2))
+        write_atomic_text(self._path, _LedgerFile(entries=entries).model_dump_json(indent=2))
