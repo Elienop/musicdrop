@@ -2000,7 +2000,10 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     starter lists beets' rules, 2026-09-26). For existing configs: a migration, an advisory, or
     extending "Add recommended rules", which today APPENDS after beets' rules, so "Wait…" ends
     "Wait..." and escapes `\.$` beside the ASCII "Wait.._" folder (`NamingPanel.tsx` ~690-702).
-    Owner's call. Search words: replace, path separator, absolute destination, untagged.
+    **Owner chose (2026-09-26, decisions #79): the Naming page warns when beets' path rules are
+    missing, and "Add recommended rules" restores them in beets' order after the typographic
+    rules — a follow-up branch; nothing edits a config without a Save.** Search words: replace,
+    path separator, absolute destination, untagged.
 
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth
