@@ -1,6 +1,6 @@
 // frontend/src/pages/settings/NamingPanel.tsx
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   applyRecoveryHint,
@@ -656,14 +656,19 @@ function ReplaceEditor({
 
   // The rows a press found complete. The "already in place" line shows until
   // the rows change, so a press that changes nothing is never a dead click.
-  const [completeRows, setCompleteRows] = useState<ReplaceRow[] | null>(null);
-  const nothingToAdd = completeRows === rows;
+  // `seq` counts those presses: the line's text is keyed by it, so a repeat
+  // press gets new text nodes and is announced again.
+  const [complete, setComplete] = useState<{
+    rows: ReplaceRow[];
+    seq: number;
+  } | null>(null);
+  const nothingToAdd = complete !== null && complete.rows === rows;
 
   function addRecommended() {
     const next = withRecommendedRules(rows, beetsRules);
     if (next.length === rows.length && next.every((r, i) => r === rows[i])) {
       // Not a draft edit: Save stays off and a Save failure stays shown.
-      setCompleteRows(rows);
+      setComplete((c) => ({ rows, seq: (c?.seq ?? 0) + 1 }));
       return;
     }
     setRows(next);
@@ -773,7 +778,11 @@ function ReplaceEditor({
             !nothingToAdd && "sr-only",
           )}
         >
-          {nothingToAdd ? "Recommended rules are already in place." : ""}
+          {nothingToAdd && (
+            <Fragment key={complete.seq}>
+              Recommended rules are already in place.
+            </Fragment>
+          )}
         </output>
       </div>
       <p className="text-muted-foreground text-xs">

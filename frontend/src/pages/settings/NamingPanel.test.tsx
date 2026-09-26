@@ -399,6 +399,13 @@ test("a press that would change nothing says so, and the line goes with the next
   // Nothing changed, so there is still nothing to save.
   expect(screen.getByRole("button", { name: /save naming/i })).toBeDisabled();
 
+  // A second press says it again: new text nodes, so the same words are
+  // announced again rather than swallowed as an unchanged region.
+  const said = screen.getByText(NOTHING_TO_ADD).firstChild;
+  expect(said).not.toBeNull();
+  await addRecommended();
+  expect(screen.getByText(NOTHING_TO_ADD).firstChild).not.toBe(said);
+
   await userEvent.type(screen.getByLabelText("Replace value 1"), "x");
   expect(screen.queryByText(NOTHING_TO_ADD)).not.toBeInTheDocument();
 });
