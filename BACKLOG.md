@@ -287,6 +287,18 @@ entry carries a dated correction block where the pass changed it._
      `StatusBanner` forces `role="status"` and `items-center` (27 usages in 11 files; two
      static banners carry the live role today, three call sites work around the alignment) —
      a role opt-out plus top alignment is its own change.
+     Added 2026-09-26 (UI seat, `fix/naming-beets-path-rules`): the Naming page's missing-rules
+     warning is a `tone="warning"` banner, so its `role="alert"` fires on every visit for an
+     old-starter install and on the keystroke that crosses one of beets' patterns (typing `x`
+     after `\.$` mounts it, Backspace unmounts it; MutationObserver-measured); the page's own
+     state lines are `<output>`. The invalid-regex line (`NamingPanel.tsx` ~729) also alerts on
+     load for a file that already holds a bad pattern. Alignment, measured: at 360 px the
+     icon sits 50 px below the first line of a 6-line banner (Beets page: 20 px and 52 px).
+     A live-DOM mock answered the design call below ("an `align` prop, or change the base"):
+     an inner `flex min-w-0 flex-1 items-start gap-3` around icon and text, outer
+     `items-center` kept for the `action` slot, lines the icon up with the first line at
+     both widths with no prop; a `size-5` icon needs `mt-0` (the legacy `mt-0.5` nudge suits
+     `size-4` only).
    - **Residual (security seat, 2026-09-19, Low): the physical second opinion is asked once per
      lexically-outside ROW.** Measured: 12 `lstat` per row against 12 per album before the per-row
      form; 5.16 ms at 200 rows against 0.027 ms flat. Off the event loop (`run_in_threadpool`), so the
@@ -2004,6 +2016,41 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     missing, and "Add recommended rules" restores them in beets' order after the typographic
     rules — a follow-up branch; nothing edits a config without a Save.** Search words: replace,
     path separator, absolute destination, untagged.
+    **DONE on `fix/naming-beets-path-rules` (2026-09-26):** `GET /api/config/naming` sends
+    `beets_replace` (beets' own rules, installed file order); the page warns while the draft
+    has a pattern row and lacks any of them (a draft with none makes Save drop the block, and
+    beets uses its own rules); the button yields typographic rules, then the user's other rows,
+    then beets' rules. Measured corrections: the trigger is an album with no ARTIST tag (an
+    empty album tag stays inside the library); and an explicit `replace: {}` is safe, because
+    beets' `sanitize_path` turns an empty list into its hard-coded `CHAR_REPLACE`
+    (`util/__init__.py` ~686), separator rule included. What it leaves open is the next entry.
+
+- **What the Naming rules fix leaves open (2026-09-26).** New mechanisms, not built; from the
+  code and UI seats on `fix/naming-beets-path-rules`.
+  - Installs that pressed the OLD button on a no-block config hold beets' nine rules THEN the
+    typographic five. Every beets pattern is present, so no warning shows, but the order forks
+    "Wait…" (→ `Wait...`) from a typed "Wait..." (→ `Wait.._`): two folders, one ending in a
+    period (measured with beets' `sanitize_path`). The button fixes it; nothing prompts the
+    press. Detecting it needs an order check; beets applies rules in list order
+    (`library/library.py` ~64) and has none. Harm is a twin folder, not a file outside the
+    library.
+  - An `include:` file's `replace:` wins over config.yaml's (`beets/__init__.py` ~33-34 into
+    confuse `core.py` ~617-619). The page reads config.yaml only, so the warning can be wrong
+    either way. The page had this blind spot before the branch.
+  - The risk clause keys on the separator rule only. Without beets' `^\.`/`\.$` an artist tag
+    of exactly `..` also escapes (`normpath(os.path.join(...))`, `library/models.py` ~1298,
+    one folder above the library). Rare; widening the gate can wait.
+  - Feedback on an "Add recommended rules" press, for both outcomes: a press that adds rows is
+    silent to a screen reader (the warning just unmounts), and a press that changes nothing is
+    silent to everyone, as it was before the branch. The branch built a no-change line with a
+    re-announce counter and deleted it in review (it spoke only on the rare path and dropped
+    the old setter's side effect untested). One design question. Related: after a press that
+    adds rows, the button drops ~286 px below the fold with focus on it.
+  - At 360 px a replace row wraps so the `→` ends line 1 pointing at nothing, and long
+    patterns are cut off (`[‘’\u02l`). Older than the branch; the button now makes the list
+    14 rows long.
+  - The warning is a `StatusBanner`, so it carries `role="alert"`: see the StatusBanner
+    role/alignment entry (search `role opt-out`), which now lists this call site.
 
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth
