@@ -25,6 +25,7 @@ def test_naming_config_holds_split_keys_and_previews() -> None:
             NamingRuleInput(query="albumtype:soundtrack", template="Soundtracks/$album/$title")
         ],
         replace=[ReplaceRuleInput(pattern="[?]", replacement="_")],
+        beets_replace=[ReplaceRuleInput(pattern="^-", replacement="_")],
         sha256="abc",
         previews=[RenderedRule(query="default", sample_path="A/B/01 C.flac", sample_source="x")],
         replace_errors=[],

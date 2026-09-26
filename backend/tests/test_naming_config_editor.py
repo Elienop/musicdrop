@@ -257,3 +257,94 @@ def test_save_naming_skips_empty_query_custom_row(beets_library: LibraryHandle) 
     text = cfg_path.read_text()
     assert "''" not in text  # no stray empty-query key written
     assert "paths:" not in text  # the empty-query row was the only rule -> key dropped
+
+
+# The old starter config's replace: block: five typographic rules and nothing else,
+# so installs made with it lack beets' own rules, '[\\/]': _ among them.
+OLD_STARTER_REPLACE = (
+    "replace:\n"
+    "  '[\\u2010\\u2011\\u2212]': '-'\n"
+    "  '[\\u2013\\u2014]': '-'\n"
+    "  '[\\u2018\\u2019\\u02bc]': \"'\"\n"
+    "  '[\\u201c\\u201d]': '_'\n"
+    "  '\\u2026': '...'\n"
+)
+
+
+def beets_file_replace_order() -> list[tuple[str, str]]:
+    """beets' ``replace:`` rows in the order the INSTALLED file lists them.
+
+    Read from PyYAML's node graph (``yaml.compose``), a layer below the
+    constructor ``_beets_default_naming`` reads with, so this is an independent
+    oracle for order and not the code under test read a second time.
+    """
+    import yaml as pyyaml
+
+    text = (Path(beets.__file__).parent / "config_default.yaml").read_text(encoding="utf-8")
+    root = pyyaml.compose(text)
+    assert isinstance(root, pyyaml.MappingNode)
+    block = next(v for k, v in root.value if k.value == "replace")
+    assert isinstance(block, pyyaml.MappingNode)
+    return [(str(k.value), str(v.value)) for k, v in block.value]
+
+
+def test_the_beets_order_oracle_can_tell_a_scrambled_order() -> None:
+    """Control: the order checks below prove something only if beets' file order
+    is neither sorted nor a palindrome, so a sorted or reversed list differs."""
+    order = beets_file_replace_order()
+    assert order[0] == ("[<>:\\?\\*\\|]", "_")
+    assert order[-1] == ("^\\s+", "")
+    assert ("[\\\\/]", "_") in order  # the path-separator rule the old starter lost
+    assert order != sorted(order)
+    assert order != list(reversed(order))
+
+
+def test_read_naming_sends_beets_replace_in_beets_order_beside_an_explicit_block(
+    beets_library: LibraryHandle,
+) -> None:
+    beets_library.config_path.write_text(
+        "directory: /tmp/music\nlibrary: library.db\n" + OLD_STARTER_REPLACE,
+        encoding="utf-8",
+    )
+
+    cfg = read_naming(beets_library)
+
+    assert [(r.pattern, r.replacement) for r in cfg.beets_replace] == beets_file_replace_order()
+    # replace is unchanged: the explicit rows verbatim, none of beets' own.
+    assert [(r.pattern, r.replacement) for r in cfg.replace] == [
+        ("[\\u2010\\u2011\\u2212]", "-"),
+        ("[\\u2013\\u2014]", "-"),
+        ("[\\u2018\\u2019\\u02bc]", "'"),
+        ("[\\u201c\\u201d]", "_"),
+        ("\\u2026", "..."),
+    ]
+
+
+def test_read_naming_sends_beets_replace_when_config_has_no_replace_block(
+    beets_library: LibraryHandle,
+) -> None:
+    beets_library.config_path.write_text(
+        "directory: /tmp/music\nlibrary: library.db\n", encoding="utf-8"
+    )
+
+    cfg = read_naming(beets_library)
+
+    order = beets_file_replace_order()
+    assert [(r.pattern, r.replacement) for r in cfg.beets_replace] == order
+    # replace is unchanged: with no block it shows beets' defaults, as before.
+    assert [(r.pattern, r.replacement) for r in cfg.replace] == order
+
+
+def test_read_naming_sends_no_beets_replace_when_beets_defaults_cannot_be_read(
+    beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    beets_library.config_path.write_text(
+        "directory: /tmp/music\nlibrary: library.db\n" + OLD_STARTER_REPLACE,
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(beets, "__file__", "/no/such/dir/beets/__init__.py")
+
+    cfg = read_naming(beets_library)
+
+    assert cfg.beets_replace == []
+    assert len(cfg.replace) == 5  # the explicit rows still read

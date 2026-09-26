@@ -4060,6 +4060,11 @@ export interface components {
          * @description Response of ``GET /api/config/naming`` — the current ``paths:``/``replace:``
          *     split into structured rows, the CAS ``sha256`` token (same one the config
          *     snapshot uses), plus the initial previews so the panel paints fully populated.
+         *
+         *     ``beets_replace`` is beets' own ``replace:`` rules, in the order the installed
+         *     beets lists them, sent whether or not config.yaml has a ``replace:`` block
+         *     (a block replaces beets' rules outright). Empty when beets' defaults cannot be
+         *     read.
          */
         NamingConfig: {
             /** Default */
@@ -4072,6 +4077,8 @@ export interface components {
             custom: components["schemas"]["NamingRuleInput"][];
             /** Replace */
             replace: components["schemas"]["ReplaceRuleInput"][];
+            /** Beets Replace */
+            beets_replace: components["schemas"]["ReplaceRuleInput"][];
             /** Sha256 */
             sha256: string;
             /** Previews */

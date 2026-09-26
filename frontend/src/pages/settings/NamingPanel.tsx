@@ -15,11 +15,12 @@ import {
   type NamingRuleInput,
   type RenderedRule,
   type ReplaceError,
+  type ReplaceRuleInput,
   useNaming,
   usePreviewNaming,
   useSaveNaming,
 } from "@/api/useNaming";
-import { Add, Error as ErrorIcon, Remove } from "@/components/icons";
+import { Add, Error as ErrorIcon, Remove, Warning } from "@/components/icons";
 import { SettingsSection } from "@/components/system/SettingsSection";
 import { StatusBanner } from "@/components/system/StatusBanner";
 import { Button } from "@/components/ui/button";
@@ -52,13 +53,44 @@ const mkId = () => nextId++;
  * as literal `\uXXXX` text (String.raw keeps the backslashes literal at runtime)
  * so the characters stay legible instead of being invisible glyphs.
  * Keep in sync with backend/app/beets/config.starter.yaml. */
-const RECOMMENDED_REPLACE_RULES: { pattern: string; replacement: string }[] = [
+const RECOMMENDED_REPLACE_RULES: ReplaceRuleInput[] = [
   { pattern: String.raw`[\u2010\u2011\u2212]`, replacement: "-" },
   { pattern: String.raw`[\u2013\u2014]`, replacement: "-" },
   { pattern: String.raw`[\u2018\u2019\u02bc]`, replacement: "'" },
   { pattern: String.raw`[\u201c\u201d]`, replacement: "_" },
   { pattern: String.raw`\u2026`, replacement: "..." },
 ];
+
+/** beets' path-separator rule (beets/config_default.yaml, `'[\\/]': _`). Only
+ * the warning's wording reads it: without it, an album with no artist tag
+ * renders an absolute path and is filed outside the library. beets' rules
+ * themselves come from the naming read, never from here. */
+const PATH_SEPARATOR_PATTERN = String.raw`[\\/]`;
+
+/** The rows "Add recommended rules" leaves: the typographic rules, then every
+ * other row in its current order, then beets' own rules in beets' order. The
+ * order matches the starter config: typographic rules run first so the ASCII
+ * they write is cleaned like typed ASCII, and beets' rules run last so no rule
+ * can write a separator or edge period past them. A row whose pattern matches a
+ * rule takes that rule's slot with its own replacement (every such row, so a
+ * pattern typed twice loses neither); a missing rule gets a new row. */
+function withRecommendedRules(
+  rows: ReplaceRow[],
+  beetsRules: ReplaceRuleInput[],
+): ReplaceRow[] {
+  const typographic = new Set(RECOMMENDED_REPLACE_RULES.map((r) => r.pattern));
+  const beets = beetsRules.filter((r) => !typographic.has(r.pattern));
+  const rulePatterns = new Set([...typographic, ...beets.map((r) => r.pattern)]);
+  const slot = (rule: ReplaceRuleInput): ReplaceRow[] => {
+    const own = rows.filter((r) => r.pattern === rule.pattern);
+    return own.length > 0 ? own : [{ id: mkId(), ...rule }];
+  };
+  return [
+    ...RECOMMENDED_REPLACE_RULES.flatMap(slot),
+    ...rows.filter((r) => !rulePatterns.has(r.pattern)),
+    ...beets.flatMap(slot),
+  ];
+}
 
 /** Assemble the ordered flat rule list the API expects (default, comp,
  * singleton, then custom) — mirrors the backend `assemble_rules`. */
@@ -319,7 +351,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
         names apply to imported files; use{" "}
         <span className="font-medium">Reorganize library</span> (Settings →
         Beets) to rename existing files. Saving writes to the same config;{" "}
-        <span className="font-medium">Apply</span> to load it. Leave a field
+        <span className="font-medium">Apply</span> to load it. Leave a template
         blank to use beets&rsquo; built-in default.
       </p>
 
@@ -434,6 +466,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
         rows={replace}
         setRows={updateReplace}
         errors={replaceErrors}
+        beetsRules={initial.beets_replace}
       />
 
       <div className="border-border mt-2 flex flex-wrap items-center gap-3 border-t pt-3">
@@ -602,12 +635,30 @@ function ReplaceEditor({
   rows,
   setRows,
   errors,
+  beetsRules,
 }: Readonly<{
   rows: ReplaceRow[];
   setRows: React.Dispatch<React.SetStateAction<ReplaceRow[]>>;
   errors: ReplaceError[];
+  /** beets' own rules, from the naming read; empty when it could not read them. */
+  beetsRules: ReplaceRuleInput[];
 }> ) {
   const errorAt = (i: number) => errors.find((e) => e.index === i);
+
+  // The warning describes the rules beets would use. Save drops an empty
+  // block, and beets then uses its own rules, so a draft with no pattern row
+  // is missing nothing. Compared by exact pattern, like the button: a row with
+  // beets' pattern and another replacement is the user's choice, not a
+  // missing rule.
+  const keepsBlock = rows.some((r) => r.pattern !== "");
+  const present = new Set(rows.map((r) => r.pattern));
+  const missing = keepsBlock
+    ? beetsRules.filter((r) => !present.has(r.pattern))
+    : [];
+  const separatorMissing = missing.some(
+    (r) => r.pattern === PATH_SEPARATOR_PATTERN,
+  );
+
   return (
     <div className="flex flex-col gap-2">
       <h3 className="text-sm font-medium">Replace characters</h3>
@@ -635,7 +686,7 @@ function ReplaceEditor({
               <span aria-hidden="true">→</span>
               <Input
                 aria-label={`Replace value ${i + 1}`}
-                placeholder="replacement"
+                placeholder="nothing"
                 value={row.replacement}
                 onChange={(e) =>
                   setRows((rs) =>
@@ -667,6 +718,21 @@ function ReplaceEditor({
           </div>
         );
       })}
+      {/* Beside the button it names. The risk clause covers the common case,
+          the separator rule: without it an album with no artist tag is filed
+          outside the library. (An artist tag of exactly ".." also escapes
+          without beets' edge-period rules; the clause does not name that.) */}
+      {missing.length > 0 && (
+        <StatusBanner tone="warning" icon={Warning}>
+          <p>
+            Some of beets&rsquo; own replace rules are missing
+            {separatorMissing &&
+              ", so an album with no artist tag can be filed outside your library"}
+            . <span className="font-medium">Add recommended rules</span>, then
+            Save.
+          </p>
+        </StatusBanner>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="outline"
@@ -683,33 +749,17 @@ function ReplaceEditor({
         <Button
           variant="outline"
           size="sm"
-          title={
-            "Maps look-alike typographic characters (‐ – — ’ “ …) " +
-            "to ASCII so they can’t create twin folders"
-          }
           onClick={() =>
-            setRows((rs) => {
-              // Dedupe by exact pattern string — a user may already have added
-              // one of these by hand; only append the ones not present yet.
-              const present = new Set(rs.map((r) => r.pattern));
-              const additions = RECOMMENDED_REPLACE_RULES.filter(
-                (r) => !present.has(r.pattern),
-              ).map((r) => ({
-                id: mkId(),
-                pattern: r.pattern,
-                replacement: r.replacement,
-              }));
-              return [...rs, ...additions];
-            })
+            setRows((rs) => withRecommendedRules(rs, beetsRules))
           }
         >
           <Add className="size-4" aria-hidden="true" /> Add recommended rules
         </Button>
       </div>
       <p className="text-muted-foreground text-xs">
-        Recommended rules map look-alike typographic characters (curly quotes,
-        en/em dashes, the non-breaking hyphen, ellipsis) to ASCII so metadata
-        can&rsquo;t mint visually-identical twin folders.
+        Recommended rules turn look-alike characters (curly quotes, dashes,
+        ellipsis) into ASCII so these can&rsquo;t make twin folders, and include
+        beets&rsquo; own rules.
       </p>
     </div>
   );

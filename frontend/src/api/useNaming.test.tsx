@@ -22,6 +22,7 @@ test("useNaming returns the config", async () => {
       singleton: null,
       custom: [],
       replace: [],
+      beets_replace: [],
       sha256: "s",
       previews: [],
       replace_errors: [],

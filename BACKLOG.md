@@ -284,9 +284,22 @@ entry carries a dated correction block where the pass changed it._
      not land" with no link, because the session reported no album id before it died); the
      notice has no "add this folder" control (`ImportAgainButton` already starts an import
      from a known path, and `/import` takes no `?path=`); the list pages carry no marker;
-     `StatusBanner` forces `role="status"` and `items-center` (27 usages in 11 files; two
+     `StatusBanner` forces a live role by tone (neutral `status`, warning/destructive `alert`,
+     `StatusBanner.tsx` ~52, no opt-out) and `items-center` (27 usages in 11 files; two
      static banners carry the live role today, three call sites work around the alignment) —
      a role opt-out plus top alignment is its own change.
+     Added 2026-09-26 (UI seat, `fix/naming-beets-path-rules`): the Naming page's missing-rules
+     warning is a `tone="warning"` banner, so its `role="alert"` fires on every visit for an
+     old-starter install and on the keystroke that crosses one of beets' patterns (typing `x`
+     after `\.$` mounts it, Backspace unmounts it; MutationObserver-measured); the page's own
+     state lines are `<output>`. The invalid-regex line (`NamingPanel.tsx` ~714) also alerts on
+     load for a file that already holds a bad pattern. Alignment, measured: at 360 px the
+     icon sits 50 px below the first line of a 6-line banner (Beets page: 20 px and 52 px).
+     A live-DOM mock answered the design call below ("an `align` prop, or change the base"):
+     an inner `flex min-w-0 flex-1 items-start gap-3` around icon and text, outer
+     `items-center` kept for the `action` slot, lines the icon up with the first line at
+     both widths with no prop; a `size-5` icon needs `mt-0` (the legacy `mt-0.5` nudge suits
+     `size-4` only).
    - **Residual (security seat, 2026-09-19, Low): the physical second opinion is asked once per
      lexically-outside ROW.** Measured: 12 `lstat` per row against 12 per album before the per-row
      form; 5.16 ms at 200 rows against 0.027 ms flat. Off the event loop (`run_in_threadpool`), so the
@@ -1998,12 +2011,57 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     included: an untagged or artist-less album renders an absolute subpath and files OUTSIDE
     the library (`//00 .flac`; album "tmp" → `/tmp/01 ….flac`). New installs are fixed (the
     starter lists beets' rules, 2026-09-26). For existing configs: a migration, an advisory, or
-    extending "Add recommended rules", which today APPENDS after beets' rules, so "Wait…" ends
-    "Wait..." and escapes `\.$` beside the ASCII "Wait.._" folder (`NamingPanel.tsx` ~690-702).
+    extending "Add recommended rules", which today APPENDS after beets' rules (the "Wait…"
+    fork this line once claimed from that order does not happen: see "NOT open, measured"
+    in the next entry).
     **Owner chose (2026-09-26, decisions #79): the Naming page warns when beets' path rules are
     missing, and "Add recommended rules" restores them in beets' order after the typographic
     rules — a follow-up branch; nothing edits a config without a Save.** Search words: replace,
     path separator, absolute destination, untagged.
+    **DONE on `fix/naming-beets-path-rules` (2026-09-26):** `GET /api/config/naming` sends
+    `beets_replace` (beets' own rules, installed file order); the page warns while the draft
+    has a pattern row and lacks any of them (a draft with none makes Save drop the block, and
+    beets uses its own rules); the button yields typographic rules, then the user's other rows,
+    then beets' rules. Measured corrections: the trigger is an album with no ARTIST tag (an
+    empty album tag stays inside the library); and an explicit `replace: {}` is safe, because
+    beets' `sanitize_path` turns an empty list into its hard-coded `CHAR_REPLACE`
+    (`util/__init__.py` ~686), separator rule included. What it leaves open is the next entry.
+
+- **What the Naming rules fix leaves open (2026-09-26).** New mechanisms, not built; from the
+  code and UI seats on `fix/naming-beets-path-rules`.
+  - NOT open, measured: rule ORDER does not fork "Wait…" from "Wait...". A code seat measured
+    beets-then-typographic through `sanitize_path` alone (→ `Wait...` vs `Wait.._`), but
+    `legalize_path` runs the rules TWICE (`util/__init__.py` ~763-766, "Re-sanitize following
+    truncation (including user replacements)"), so through `Item.destination` both orders
+    give `Wait.._` for both (measured 2026-09-26 with the owner's own block, which lists
+    beets' rules first). Installs that pressed the old button need nothing.
+  - An `include:` file's `replace:` wins over config.yaml's (`beets/__init__.py` ~33-34 into
+    confuse `core.py` ~617-619). The page reads config.yaml only, so the warning can be wrong
+    either way. The page had this blind spot before the branch.
+  - The risk clause keys on the separator rule only. Without beets' `^\.`/`\.$` an artist tag
+    of exactly `..` also escapes (`normpath(os.path.join(...))`, `library/models.py` ~1298,
+    one folder above the library). Rare; widening the gate can wait. And "no artist tag" is
+    strictly "the template's FIRST field renders empty": with `$genre/$albumartist/…` a
+    genre-less album escapes and an artist-less one does not (measured through
+    `Item.destination`). True for beets' default and the starter, which start with
+    `$albumartist`.
+  - Feedback on an "Add recommended rules" press, for both outcomes: a press that adds rows is
+    not reliably announced (the warning unmounts, and "Unsaved changes. Save, then Apply."
+    mounts WITH its text, which a status line does not reliably read out; from an
+    already-dirty draft nothing new appears at all), and a press that changes nothing is
+    silent to everyone, as it was before the branch. The branch built a no-change line with a
+    re-announce counter and deleted it in review (it spoke only on the rare path and dropped
+    the old setter's side effect untested). One design question. Related: a press that adds
+    beets' nine rows moves the button (focus on it) down 322 px at 1280×900 and 658 px at
+    360×800.
+  - At 360 px a replace row wraps so the `→` ends line 1 pointing at nothing, and long
+    patterns are cut off (the `\uXXXX` escapes are literal text, so `[‘’ʼ]`
+    loses its end). Older than the branch; the button now makes the list 14 rows long.
+  - Removing a replace row (or a custom path rule) with its Remove button drops keyboard
+    focus to `<body>`. Same on `main`; no shared focus-after-remove helper exists (only
+    `ArtistImageEditPanel.tsx` ~139 and `FolderBrowserDialog.tsx` ~145-402 move focus).
+  - The warning is a `StatusBanner`, so it carries `role="alert"`: see the StatusBanner
+    role/alignment entry (search `role opt-out`), which now lists this call site.
 
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth

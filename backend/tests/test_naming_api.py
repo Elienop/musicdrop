@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.beets.library import LibraryHandle
 from tests.conftest import answer_before_a_fifo_blocks
+from tests.test_naming_config_editor import OLD_STARTER_REPLACE, beets_file_replace_order
 
 
 def _cfg_sha(client: TestClient) -> str:
@@ -34,6 +35,46 @@ def test_get_naming_returns_split_and_previews(client: TestClient) -> None:
         "sha256",
         "previews",
     }
+
+
+def test_get_naming_sends_beets_replace_beside_an_explicit_block(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """The panel warns when the rows leave out beets' own rules, so the read
+    sends them in beets' order even while config.yaml's block replaces them."""
+    beets_library.config_path.write_text(
+        _head(beets_library) + OLD_STARTER_REPLACE, encoding="utf-8"
+    )
+
+    r = client.get("/api/config/naming")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["beets_replace"] == [
+        {"pattern": p, "replacement": rep} for p, rep in beets_file_replace_order()
+    ]
+    assert [row["pattern"] for row in body["replace"]] == [
+        "[\\u2010\\u2011\\u2212]",
+        "[\\u2013\\u2014]",
+        "[\\u2018\\u2019\\u02bc]",
+        "[\\u201c\\u201d]",
+        "\\u2026",
+    ]
+
+
+def test_get_naming_sends_an_empty_beets_replace_when_beets_defaults_cannot_be_read(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    beets_library.config_path.write_text(
+        _head(beets_library) + OLD_STARTER_REPLACE, encoding="utf-8"
+    )
+    monkeypatch.setattr("beets.__file__", "/no/such/dir/beets/__init__.py")
+
+    r = client.get("/api/config/naming")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["beets_replace"] == []
+    assert len(r.json()["replace"]) == 5  # the explicit rows still read
 
 
 def test_preview_renders_against_synthetic_when_empty(client: TestClient) -> None:

@@ -14787,6 +14787,13 @@
             "type": "array",
             "title": "Replace"
           },
+          "beets_replace": {
+            "items": {
+              "$ref": "#/components/schemas/ReplaceRuleInput"
+            },
+            "type": "array",
+            "title": "Beets Replace"
+          },
           "sha256": {
             "type": "string",
             "title": "Sha256"
@@ -14813,12 +14820,13 @@
           "singleton",
           "custom",
           "replace",
+          "beets_replace",
           "sha256",
           "previews",
           "replace_errors"
         ],
         "title": "NamingConfig",
-        "description": "Response of ``GET /api/config/naming`` \u2014 the current ``paths:``/``replace:``\nsplit into structured rows, the CAS ``sha256`` token (same one the config\nsnapshot uses), plus the initial previews so the panel paints fully populated."
+        "description": "Response of ``GET /api/config/naming`` \u2014 the current ``paths:``/``replace:``\nsplit into structured rows, the CAS ``sha256`` token (same one the config\nsnapshot uses), plus the initial previews so the panel paints fully populated.\n\n``beets_replace`` is beets' own ``replace:`` rules, in the order the installed\nbeets lists them, sent whether or not config.yaml has a ``replace:`` block\n(a block replaces beets' rules outright). Empty when beets' defaults cannot be\nread."
       },
       "NamingPreviewRequest": {
         "properties": {

@@ -11,18 +11,23 @@ type NamingSave422 =
   operations["save_naming_route_api_config_naming_save_post"]["responses"][422]["content"]["application/json"];
 type ErrorDetail = components["schemas"]["ErrorDetail"];
 type ReplaceError = components["schemas"]["ReplaceError"];
+type NamingConfig = components["schemas"]["NamingConfig"];
+type Rule = components["schemas"]["ReplaceRuleInput"];
 
 function wrap(ui: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
 }
 
+// `beets_replace: []` (beets' defaults unread) keeps the rules warning out of
+// every test that is not about it; the rules tests below set their own.
 const naming = {
   default: "$albumartist/$album/$track $title",
   comp: null,
   singleton: null,
   custom: [],
   replace: [],
+  beets_replace: [],
   sha256: "sha-1",
   previews: [
     {
@@ -33,7 +38,7 @@ const naming = {
     },
   ],
   replace_errors: [],
-};
+} satisfies NamingConfig;
 
 beforeEach(() => {
   vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
@@ -125,10 +130,16 @@ test("pre-fills with beets' effective defaults (no-override case)", async () => 
       { pattern: "^-", replacement: "_" },
       { pattern: "\\s+$", replacement: "" },
     ],
+    // A no-block install's rows ARE beets' rules (here, three of them).
+    beets_replace: [
+      { pattern: "[<>:\\?\\*\\|]", replacement: "_" },
+      { pattern: "^-", replacement: "_" },
+      { pattern: "\\s+$", replacement: "" },
+    ],
     sha256: "sha-eff",
     previews: [],
     replace_errors: [],
-  };
+  } satisfies NamingConfig;
   vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
     if (path === "/api/config/naming")
       return { data: effective, response: { ok: true, status: 200 } } as never;
@@ -162,83 +173,299 @@ test("pre-fills with beets' effective defaults (no-override case)", async () => 
   expect(screen.getByDisplayValue("^-")).toBeInTheDocument();
 });
 
-// The recommended-rules button maps MusicBrainz typographic Unicode (the
-// blink‐182 twin class) to ASCII. Patterns are stored as literal \uXXXX text
-// (JS source escapes the backslash) so they stay legible in the editor.
-test("Add recommended rules seeds the five typographic replace rows", async () => {
-  wrap(<NamingPanel />);
-  await screen.findByDisplayValue(/\$albumartist/);
-  await userEvent.click(
-    screen.getByRole("button", { name: /add recommended rules/i }),
-  );
-  expect(screen.getAllByLabelText(/replace pattern/i)).toHaveLength(5);
-  // Exact pattern strings reach the inputs verbatim.
-  expect(
-    screen.getByDisplayValue("[\\u2010\\u2011\\u2212]"),
-  ).toBeInTheDocument();
-  expect(screen.getByDisplayValue("\\u2026")).toBeInTheDocument();
-});
+// ---- beets' own replace rules: the warning and "Add recommended rules" ----
+//
+// A replace: block REPLACES beets' built-in rules, so an install made from the
+// old five-rule starter lacks '[\\/]': _ and files an album with no artist tag
+// outside the library. The read sends beets' own rules (`beets_replace`); the
+// panel warns while Save would keep any of them out, and the button restores
+// them after the typographic rules.
 
-test("Add recommended rules is idempotent (clicking twice adds no duplicates)", async () => {
-  wrap(<NamingPanel />);
-  await screen.findByDisplayValue(/\$albumartist/);
-  const btn = screen.getByRole("button", { name: /add recommended rules/i });
-  await userEvent.click(btn);
-  await userEvent.click(btn);
-  expect(screen.getAllByLabelText(/replace pattern/i)).toHaveLength(5);
-});
+/** MusicDrop's five typographic rules, in their curated order. Patterns are
+ * literal \uXXXX text so they stay legible in the editor. */
+const TYPOGRAPHIC: Rule[] = [
+  { pattern: String.raw`[\u2010\u2011\u2212]`, replacement: "-" },
+  { pattern: String.raw`[\u2013\u2014]`, replacement: "-" },
+  { pattern: String.raw`[\u2018\u2019\u02bc]`, replacement: "'" },
+  { pattern: String.raw`[\u201c\u201d]`, replacement: "_" },
+  { pattern: String.raw`\u2026`, replacement: "..." },
+];
+/** beets' own rules as the read sends them, in beets 2.14's order
+ * (beets/config_default.yaml). A fixture: the panel reads them only from the
+ * response. */
+const BEETS: Rule[] = [
+  { pattern: String.raw`[<>:\?\*\|]`, replacement: "_" },
+  { pattern: String.raw`\"`, replacement: "_" },
+  { pattern: String.raw`[\\/]`, replacement: "_" },
+  { pattern: String.raw`^\.`, replacement: "_" },
+  { pattern: String.raw`\.$`, replacement: "_" },
+  { pattern: String.raw`[\x00-\x1f]`, replacement: "_" },
+  { pattern: "^-", replacement: "_" },
+  { pattern: String.raw`\s+$`, replacement: "" },
+  { pattern: String.raw`^\s+`, replacement: "" },
+];
+const SEPARATOR = BEETS[2];
+const LEADING_DASH = BEETS[6];
+/** The new starter config's block (backend/app/beets/config.starter.yaml). */
+const STARTER: Rule[] = [...TYPOGRAPHIC, ...BEETS];
+const without = (rows: Rule[], gone: Rule) =>
+  rows.filter((r) => r.pattern !== gone.pattern);
 
-test("Add recommended rules skips a recommended pattern already present", async () => {
-  const seeded = {
+const WARN_WITH_RISK =
+  "Some of beets’ own replace rules are missing, so an album with no artist tag can be filed outside your library. Add recommended rules, then Save.";
+const WARN_NO_RISK =
+  "Some of beets’ own replace rules are missing. Add recommended rules, then Save.";
+
+/** Render the panel on a read whose rows are `replace` and whose beets rules
+ * are `beetsReplace`; resolve once the editor is up. */
+async function renderRules(replace: Rule[], beetsReplace: Rule[] = BEETS) {
+  type Stub = (path: string) => Promise<unknown>;
+  const get = vi.mocked(client.GET).getMockImplementation() as unknown as
+    | Stub
+    | undefined;
+  if (!get) throw new Error("beforeEach mocks missing");
+  const read: NamingConfig = {
     ...naming,
-    replace: [{ pattern: "\\u2026", replacement: "..." }],
-    sha256: "sha-seed",
+    replace,
+    beets_replace: beetsReplace,
+    sha256: "sha-rules",
   };
-  vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
-    if (path === "/api/config/naming")
-      return { data: seeded, response: { ok: true, status: 200 } } as never;
-    if (path === "/api/imports/active")
-      return {
-        data: { active: false },
-        response: { ok: true, status: 200 },
-      } as never;
-    if (path === "/api/config")
-      return {
-        data: { apply_pending: false },
-        response: { ok: true, status: 200 },
-      } as never;
-    return { data: undefined, response: { ok: false, status: 404 } } as never;
-  });
-
+  vi.mocked(client.GET).mockImplementation((async (path: string) =>
+    path === "/api/config/naming"
+      ? { data: read, response: { ok: true, status: 200 } }
+      : get(path)) as never);
   wrap(<NamingPanel />);
   await screen.findByDisplayValue(/\$albumartist/);
-  // Exactly the seeded row is present before the click.
-  expect(screen.getAllByLabelText(/replace pattern/i)).toHaveLength(1);
-  await userEvent.click(
+}
+
+/** The replace rows in the editor, in order. */
+function replaceRows(): Rule[] {
+  const values = screen.queryAllByLabelText(/^Replace value \d+$/);
+  return screen
+    .queryAllByLabelText(/^Replace pattern \d+$/)
+    .map((p, i) => ({
+      pattern: (p as HTMLInputElement).value,
+      replacement: (values[i] as HTMLInputElement).value,
+    }));
+}
+
+/** The whole rules warning, or null when it is not shown. */
+function rulesWarning(): string | null {
+  const line = screen.queryByText(/beets’ own replace rules are missing/);
+  if (!line) return null;
+  const banner = line.closest('[data-slot="status-banner"]');
+  if (!banner) throw new Error("the rules warning is not in a banner");
+  return banner.textContent;
+}
+
+const addRecommended = () =>
+  userEvent.click(
     screen.getByRole("button", { name: /add recommended rules/i }),
   );
-  // 1 seeded + 4 new (the ellipsis is deduped by exact pattern) = 5.
-  expect(screen.getAllByLabelText(/replace pattern/i)).toHaveLength(5);
-  expect(screen.getAllByDisplayValue("\\u2026")).toHaveLength(1);
+
+test("the old starter's rows warn, naming the risk: beets' separator rule is missing", async () => {
+  await renderRules(TYPOGRAPHIC);
+  expect(rulesWarning()).toBe(WARN_WITH_RISK);
+  expect(screen.getByRole("alert")).toHaveTextContent(WARN_WITH_RISK);
 });
 
-test("Save includes the recommended rules once added", async () => {
-  wrap(<NamingPanel />);
-  await screen.findByDisplayValue(/\$albumartist/);
-  await userEvent.click(
-    screen.getByRole("button", { name: /add recommended rules/i }),
+test("the warning leaves the risk out while the separator rule is present", async () => {
+  await renderRules(without(STARTER, LEADING_DASH));
+  expect(rulesWarning()).toBe(WARN_NO_RISK);
+});
+
+test("no warning on an install with no replace: block (its rows are beets' rules)", async () => {
+  await renderRules(BEETS);
+  expect(replaceRows()).toEqual(BEETS);
+  expect(rulesWarning()).toBeNull();
+});
+
+test("a row with beets' pattern and the user's own replacement counts as present", async () => {
+  const own = STARTER.map((r) =>
+    r.pattern === SEPARATOR.pattern ? { ...r, replacement: "-" } : r,
   );
+  await renderRules(own);
+  expect(replaceRows()).toEqual(own);
+  expect(rulesWarning()).toBeNull();
+});
+
+test("no warning when beets' own rules could not be read", async () => {
+  await renderRules(TYPOGRAPHIC, []);
+  expect(replaceRows()).toEqual(TYPOGRAPHIC);
+  expect(rulesWarning()).toBeNull();
+});
+
+test("deleting the separator row warns; Add recommended rules puts it back and the warning goes", async () => {
+  await renderRules(BEETS);
+  expect(rulesWarning()).toBeNull();
+  await userEvent.click(
+    screen.getByRole("button", { name: "Remove replace rule 3" }),
+  );
+  expect(replaceRows()).toEqual(without(BEETS, SEPARATOR));
+  expect(rulesWarning()).toBe(WARN_WITH_RISK);
+
+  await addRecommended();
+  expect(replaceRows()).toEqual(STARTER);
+  expect(rulesWarning()).toBeNull();
+});
+
+test("Add recommended rules on a no-block install gives the starter's block", async () => {
+  await renderRules(BEETS);
+  await addRecommended();
+  expect(replaceRows()).toEqual(STARTER);
+});
+
+test("Add recommended rules on the old starter gives the new starter's block", async () => {
+  await renderRules(TYPOGRAPHIC);
+  await addRecommended();
+  expect(replaceRows()).toEqual(STARTER);
+  expect(rulesWarning()).toBeNull();
+});
+
+test("Add recommended rules moves beets' rules after the typographic ones (the old button's order)", async () => {
+  await renderRules([...BEETS, ...TYPOGRAPHIC]);
+  await addRecommended();
+  expect(replaceRows()).toEqual(STARTER);
+});
+
+test("Add recommended rules keeps the user's other rows, in order, between the two sets", async () => {
+  const amp = { pattern: "&", replacement: "and" };
+  const the = { pattern: "^The ", replacement: "" };
+  await renderRules([SEPARATOR, amp, TYPOGRAPHIC[4], the]);
+  await addRecommended();
+  expect(replaceRows()).toEqual([...TYPOGRAPHIC, amp, the, ...BEETS]);
+});
+
+test("Add recommended rules keeps the user's replacement on a matching pattern", async () => {
+  await renderRules([
+    { pattern: SEPARATOR.pattern, replacement: "-" },
+    { pattern: TYPOGRAPHIC[2].pattern, replacement: "_" },
+  ]);
+  await addRecommended();
+  expect(replaceRows()).toEqual([
+    ...TYPOGRAPHIC.slice(0, 2),
+    { pattern: TYPOGRAPHIC[2].pattern, replacement: "_" },
+    ...TYPOGRAPHIC.slice(3),
+    ...BEETS.slice(0, 2),
+    { pattern: SEPARATOR.pattern, replacement: "-" },
+    ...BEETS.slice(3),
+  ]);
+});
+
+test("Add recommended rules keeps both rows of a pattern the user typed twice", async () => {
+  const amp = { pattern: "&", replacement: "and" };
+  const first = { pattern: SEPARATOR.pattern, replacement: "_" };
+  const second = { pattern: SEPARATOR.pattern, replacement: "-" };
+  await renderRules([first, amp, second]);
+  const expected = [
+    ...TYPOGRAPHIC,
+    amp,
+    ...BEETS.slice(0, 2),
+    first,
+    second,
+    ...BEETS.slice(3),
+  ];
+  await addRecommended();
+  expect(replaceRows()).toEqual(expected);
+  await addRecommended();
+  expect(replaceRows()).toEqual(expected);
+});
+
+test("pressing Add recommended rules twice equals pressing it once", async () => {
+  await renderRules(TYPOGRAPHIC);
+  await addRecommended();
+  const once = replaceRows();
+  expect(once).toEqual(STARTER);
+  await addRecommended();
+  expect(replaceRows()).toEqual(once);
+});
+
+test("with beets' rules unread, Add recommended rules still puts the typographic rules first", async () => {
+  const amp = { pattern: "&", replacement: "and" };
+  await renderRules([amp, TYPOGRAPHIC[1]], []);
+  await addRecommended();
+  expect(replaceRows()).toEqual([...TYPOGRAPHIC, amp]);
+});
+
+// Save drops an empty block, and beets then uses its own rules: a draft with
+// no pattern row is missing nothing.
+test("no warning once every row of the old starter is deleted", async () => {
+  await renderRules(TYPOGRAPHIC);
+  expect(rulesWarning()).toBe(WARN_WITH_RISK);
+  for (let i = TYPOGRAPHIC.length; i > 0; i--) {
+    await userEvent.click(
+      screen.getByRole("button", { name: `Remove replace rule ${i}` }),
+    );
+  }
+  expect(replaceRows()).toEqual([]);
+  expect(rulesWarning()).toBeNull();
+
+  await addRecommended();
+  expect(replaceRows()).toEqual(STARTER);
+  expect(rulesWarning()).toBeNull();
+});
+
+test("no warning while every row left has a blank pattern", async () => {
+  await renderRules(TYPOGRAPHIC);
+  for (let i = TYPOGRAPHIC.length; i > 0; i--) {
+    await userEvent.click(
+      screen.getByRole("button", { name: `Remove replace rule ${i}` }),
+    );
+  }
+  await userEvent.click(
+    screen.getByRole("button", { name: /add replacement/i }),
+  );
+  await userEvent.type(screen.getByLabelText("Replace value 1"), "_");
+  expect(replaceRows()).toEqual([{ pattern: "", replacement: "_" }]);
+  expect(rulesWarning()).toBeNull();
+});
+
+test("an empty replace value reads as deleting, not as a blank to fill in", async () => {
+  await renderRules(BEETS);
+  expect(screen.getByLabelText("Replace value 8")).toHaveAttribute(
+    "placeholder",
+    "nothing",
+  );
+});
+
+test("the Add recommended rules help is said once, in the helper line", async () => {
+  await renderRules(STARTER);
+  expect(
+    screen.getByRole("button", { name: /add recommended rules/i }),
+  ).not.toHaveAttribute("title");
+  expect(
+    screen.getByText(/^Recommended rules turn look-alike/),
+  ).toHaveTextContent(
+    /^Recommended rules turn look-alike characters \(curly quotes, dashes, ellipsis\) into ASCII so these can’t make twin folders, and include beets’ own rules\.$/,
+  );
+});
+
+test("Add recommended rules ends a shown Save failure, even when it adds nothing", async () => {
+  mockPanel({ applyPending: false, save: () => fail(500) });
+  wrap(<NamingPanel />);
+  const def = await screen.findByDisplayValue(/\$albumartist/);
+  await addRecommended();
+  expect(replaceRows()).toEqual(TYPOGRAPHIC);
+  await userEvent.type(def, "X");
+  await userEvent.click(screen.getByRole("button", { name: /save naming/i }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    SAVE_FALLBACK_ALERT,
+  );
+
+  await addRecommended();
+  expect(replaceRows()).toEqual(TYPOGRAPHIC);
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("Save sends the restored rules", async () => {
+  await renderRules(TYPOGRAPHIC);
+  await addRecommended();
   await userEvent.click(screen.getByRole("button", { name: /save naming/i }));
   await waitFor(() =>
     expect(client.POST).toHaveBeenCalledWith(
       "/api/config/naming/save",
       expect.objectContaining({
-        body: expect.objectContaining({
-          replace: expect.arrayContaining([
-            { pattern: "[\\u2010\\u2011\\u2212]", replacement: "-" },
-            { pattern: "\\u2026", replacement: "..." },
-          ]),
-        }),
+        body: expect.objectContaining({ replace: STARTER }),
       }),
     ),
   );
