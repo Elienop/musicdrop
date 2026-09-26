@@ -52,7 +52,7 @@ class AcquisitionQueueStatus(BaseModel):
 
 
 class InboxItem(BaseModel):
-    """One top-level inbox folder awaiting review (a backlog row).
+    """One top-level folder in slskd's folder that no run has imported yet.
 
     ``name`` is the immediate inbox child dir (also the import target id).
     ``outcome`` is best-effort: ``set_aside``/``failed`` iff a ledger entry at or
@@ -88,7 +88,7 @@ class ImportInboxItemRequest(BaseModel):
 
 
 class ReviewInboxResponse(BaseModel):
-    """Result of ``POST /api/acquisition/review-inbox`` (the slskd-panel review).
+    """Result of ``POST /api/acquisition/review-inbox`` (the Review page's Review all).
 
     ``started`` is True iff an attended import of the inbox was kicked off, with
     ``job_id`` the running job to navigate to. An empty inbox is a no-op

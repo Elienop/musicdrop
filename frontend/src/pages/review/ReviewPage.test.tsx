@@ -1513,7 +1513,9 @@ describe("ReviewPage", () => {
   });
 
   test.each([
-    ["any slskd row", "inbox", "The files stay on disk. Downloads go back to Not imported yet."],
+    // The first row is a sweep row: a mix states both, and never "Downloads",
+    // which read as covering the sweep row too.
+    ["a slskd row and a sweep row", "inbox", "The files stay on disk. slskd downloads go back to Not imported yet; a re-sweep will NOT pick up the others."],
     ["sweep rows only", "sweep", "The files stay on disk, but the banked candidates are forfeited; a re-sweep will NOT pick these folders up again."],
   ])("Remove selected with %s says where the folders go", async (_, second, sentence) => {
     server.use(
@@ -1544,6 +1546,8 @@ describe("ReviewPage", () => {
   const GO_BACK_MANY = "The files stay on disk. Downloads go back to Not imported yet.";
   const SWEEP_MANY =
     "The files stay on disk, but the banked candidates are forfeited; a re-sweep will NOT pick these folders up again.";
+  const MIXED =
+    "The files stay on disk. slskd downloads go back to Not imported yet; a re-sweep will NOT pick up the others.";
   const inAllView = (items: ReturnType<typeof bankRow>[]) =>
     http.get(BANK, () =>
       HttpResponse.json({ items, total: items.length, total_all: items.length, offset: 0, limit: 48 }),
@@ -1565,6 +1569,7 @@ describe("ReviewPage", () => {
     ["a held and a done slskd row", ["needs_review", "inbox"], ["done", "inbox"], GO_BACK_MANY],
     ["a done and an ignored slskd row", ["done", "inbox"], ["ignored", "inbox"], STAYS],
     ["an ignored slskd row and a sweep row", ["ignored", "inbox"], ["needs_review", "sweep"], SWEEP_MANY],
+    ["a held slskd row and a manual row", ["needs_review", "inbox"], ["needs_review", "manual"], MIXED],
   ])("Remove selected with %s", async (_, [s1, src1], [s2, src2], sentence) => {
     server.use(
       inAllView([

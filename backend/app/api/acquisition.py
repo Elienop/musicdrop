@@ -5,8 +5,8 @@
 Option A). Under the lifespan-less test client there is no queue on
 ``app.state``, so it falls back to an idle status rather than 500.
 
-``POST /acquisition/review-inbox`` is the slskd-panel one-click review: it
-resolves the fixed inbox path SERVER-SIDE (never sent to the browser) and starts
+``POST /acquisition/review-inbox`` is the Review page's **Review all**: it
+resolves slskd's folder SERVER-SIDE (the request carries no path) and starts
 a normal *attended* import with ``operation="default"``, the file operation
 beets' config resolves to (decisions #77) — targeting the SETTLED top-level
 folders, never the inbox root (which is the downloader's live output dir).
@@ -275,8 +275,8 @@ async def review_inbox(
 ) -> ReviewInboxResponse:
     """Start an attended import of the SETTLED inbox folders, with beets' file operation.
 
-    One-click review of the set-aside backlog from the slskd panel: no path is
-    typed and the absolute inbox path never leaves the server. Strong matches
+    **Review all** on the Review page, over "Not imported yet": no path is
+    typed; the server resolves slskd's folder itself. Strong matches
     auto-apply; uncertain ones park for review in the normal candidate-review
     screen. Nothing to import is a no-op
     (``started=False``), never an error — and the shared import-slot gate refuses
@@ -359,7 +359,7 @@ async def review_inbox(
 
 @router.get("/acquisition/inbox/items")
 async def list_inbox_items(request: Request) -> InboxListing:
-    """The inbox backlog — top-level folders awaiting review, source-agnostic.
+    """The "Not imported yet" list: slskd's top-level folders, minus those in review.
 
     Read-only. A missing/empty inbox (or the lifespan-less test client, which
     has no ``inbox_dir``) yields an empty listing; a bank that cannot be read

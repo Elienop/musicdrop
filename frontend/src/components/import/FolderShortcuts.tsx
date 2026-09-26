@@ -56,7 +56,8 @@ export function SourcePins({
         ))}
         <Link
           to="/settings/sources"
-          className="text-foreground focus-ring rounded-sm text-sm underline"
+          // The operation line's Change, in size and treatment.
+          className="text-foreground focus-ring rounded-sm text-xs underline"
         >
           {/* "Change sources" to a screen reader: the operation line above
               has a Change of its own. The space sits outside the span, where

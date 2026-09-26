@@ -8,9 +8,9 @@ Pydantic's default ``extra="ignore"``.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, StringConstraints
 
 
 class SlskdSettings(BaseModel):
@@ -67,7 +67,11 @@ class SlskdWebhookEvent(BaseModel):
     """The inbound slskd completion webhook payload (camelCase wire fields)."""
 
     type: str
-    localDirectoryName: str | None = None
+    # 4096 characters is PATH_MAX and admits every folder slskd can report (a
+    # path has no more characters than bytes). Unbounded, the remap's
+    # ``relative_to`` is quadratic in the part count and runs on the event
+    # loop: 7.0 s at 128 KB, 9.6 ms at this cap (measured 2026-09-26).
+    localDirectoryName: Annotated[str, StringConstraints(max_length=4096)] | None = None
     remoteDirectoryName: str | None = None
     username: str | None = None
 

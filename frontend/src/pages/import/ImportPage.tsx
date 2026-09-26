@@ -270,7 +270,7 @@ function resumeBannerText(origin: string | undefined): string {
     return "A sweep is running; uncertain albums are being banked for review.";
   }
   if (origin === "inbox") {
-    return "An inbox import is running.";
+    return "An import from slskd is running.";
   }
   return "An import is already running.";
 }
@@ -518,6 +518,8 @@ function ImportEntry() {
               // says nothing is wrong with the path, and reddening it there sends
               // the user off to edit the one thing that was fine.
               aria-invalid={start.error instanceof ImportStartRejectedError}
+              // Mono, as every path box in Settings is.
+              className="font-mono"
             />
             {/* The page's own setter, so a browsed folder clears a stale
                 refusal exactly as typing does. */}
@@ -1935,8 +1937,9 @@ function JobFailed({
           // a bare "·". Each clause gets its own line, its own sentence.
           // `whitespace-pre-line` keeps the error's own line break: the
           // cross-filesystem line and beets' text arrive as `line1\nline2`.
+          // `wrap-anywhere`: beets' text can carry a long path with no space.
           <>
-            <span className="whitespace-pre-line">
+            <span className="whitespace-pre-line wrap-anywhere">
               {state.error ?? "The import stopped unexpectedly."}
             </span>
             {counts !== null && <span className="mt-1 block">{counts}</span>}

@@ -4,6 +4,7 @@ import {
   type RefObject,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -184,6 +185,7 @@ function FolderBrowser({
   const query = useFolderListing(folder);
   const focusNext = useRef<FocusNext>({ kind: "first" });
   const listRef = useRef<HTMLDivElement>(null);
+  const boxRef = useRef<HTMLInputElement>(null);
 
   const landed = query.data;
   if (landed !== undefined && landed !== shown) {
@@ -193,6 +195,17 @@ function FolderBrowser({
   }
 
   useFocusWhenListed(shown, focusNext, listRef, contentRef);
+
+  // Unfocused, the box shows its END: the folder "Use this folder" takes. A
+  // listing sets the text while focus is on a row, and a box set that way
+  // shows its start, so at 360px the folder's own name was cut off. Focused,
+  // the caret decides. The blur has its own line on the box below.
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    if (box !== null && document.activeElement !== box) {
+      box.scrollLeft = box.scrollWidth;
+    }
+  }, [text]);
 
   const loading = query.isPending;
   const failure = query.isError ? query.error.message : null;
@@ -260,10 +273,17 @@ function FolderBrowser({
       <div className="flex min-w-0 flex-col gap-2">
         <div className="relative">
           <Input
+            ref={boxRef}
             type="text"
             value={text}
             onChange={(e) => onTextChange(e.target.value)}
             onKeyDown={onKeyDown}
+            // Chromium scrolls a box back to its start on blur, after `blur`
+            // and before `focusout`, which is what React's onBlur listens to
+            // (measured in Orca, 2026-09-26), so this line lands after it.
+            onBlur={(e) => {
+              e.currentTarget.scrollLeft = e.currentTarget.scrollWidth;
+            }}
             aria-label="Folder path"
             // The start route's bound, as on the page's own path box.
             maxLength={4096}
@@ -271,7 +291,8 @@ function FolderBrowser({
             autoCapitalize="none"
             spellCheck={false}
             // Room for the spinner below, so the text never runs under it.
-            className="pr-9"
+            // Mono, as every path box in Settings is.
+            className="pr-9 font-mono"
           />
           {/* A later load keeps the last list on screen; the spinner sits in
               the box so nothing below it moves. */}

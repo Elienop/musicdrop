@@ -107,8 +107,10 @@ class ImportJob:
     phase: ImportPhase = ImportPhase.scanning
     albums: dict[int, _FeedAlbum] = field(default_factory=dict)
     error: str | None = None
-    # Where this import came from: "manual" (the web Start flow) or "inbox" (the
-    # unattended acquisition seam). Surfaced on the job state + the active probe.
+    # Where this import came from: "manual" (``POST /api/import``: Add from folder
+    # and its re-runs), "inbox" (slskd's folder: the drain, Review all, or a row's
+    # Review), "sweep" or "bank_apply".
+    # Surfaced on the job state + the active probe.
     origin: ImportOrigin = "manual"
     # The single folder this job was started with, or None when it was started
     # with several (beets takes each as its own toppath). Surfaced on the job
@@ -448,8 +450,9 @@ class ImportJobRegistry:
                 self._job.phase = ImportPhase.done
                 finished = True
                 landed = self._fully_landed_sources(self._job)
-        # Recorded BEFORE the event below, so a tab that refetches on it already
-        # sees the folder gone from "Not imported yet".
+        # Recorded BEFORE the event below: every open tab refetches "Not imported
+        # yet" on it (``inbox-items`` is in the frontend's ``LIBRARY_CONTENT_KEYS``)
+        # and must already see the folder gone.
         if landed:
             self._record_imported(landed)
         # Emit OUTSIDE the lock: a finished import (manual / inbox / bank-apply

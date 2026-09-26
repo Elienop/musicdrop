@@ -425,7 +425,9 @@ function Panel({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <SettingsSection
       title="slskd"
-      description="Connect slskd so completed Soulseek downloads import themselves into the library. The API key and webhook secret are write-only; stored on the server and never shown again."
+      // What happens to a finished download is the Auto-import switch's to
+      // say: said here too, it was said twice, and untrue with the switch off.
+      description="Connect your slskd, the Soulseek client. The API key and webhook secret are write-only; they’re stored on the server and never shown again."
     >
       {children}
     </SettingsSection>

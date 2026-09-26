@@ -1850,8 +1850,8 @@ export interface paths {
          * Review Inbox
          * @description Start an attended import of the SETTLED inbox folders, with beets' file operation.
          *
-         *     One-click review of the set-aside backlog from the slskd panel: no path is
-         *     typed and the absolute inbox path never leaves the server. Strong matches
+         *     **Review all** on the Review page, over "Not imported yet": no path is
+         *     typed; the server resolves slskd's folder itself. Strong matches
          *     auto-apply; uncertain ones park for review in the normal candidate-review
          *     screen. Nothing to import is a no-op
          *     (``started=False``), never an error — and the shared import-slot gate refuses
@@ -1880,7 +1880,7 @@ export interface paths {
         };
         /**
          * List Inbox Items
-         * @description The inbox backlog — top-level folders awaiting review, source-agnostic.
+         * @description The "Not imported yet" list: slskd's top-level folders, minus those in review.
          *
          *     Read-only. A missing/empty inbox (or the lifespan-less test client, which
          *     has no ``inbox_dir``) yields an empty listing; a bank that cannot be read
@@ -3791,7 +3791,7 @@ export interface components {
         };
         /**
          * InboxItem
-         * @description One top-level inbox folder awaiting review (a backlog row).
+         * @description One top-level folder in slskd's folder that no run has imported yet.
          *
          *     ``name`` is the immediate inbox child dir (also the import target id).
          *     ``outcome`` is best-effort: ``set_aside``/``failed`` iff a ledger entry at or
@@ -4942,7 +4942,7 @@ export interface components {
         };
         /**
          * ReviewInboxResponse
-         * @description Result of ``POST /api/acquisition/review-inbox`` (the slskd-panel review).
+         * @description Result of ``POST /api/acquisition/review-inbox`` (the Review page's Review all).
          *
          *     ``started`` is True iff an attended import of the inbox was kicked off, with
          *     ``job_id`` the running job to navigate to. An empty inbox is a no-op

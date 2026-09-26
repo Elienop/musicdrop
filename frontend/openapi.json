@@ -8789,7 +8789,7 @@
           "acquisition"
         ],
         "summary": "Review Inbox",
-        "description": "Start an attended import of the SETTLED inbox folders, with beets' file operation.\n\nOne-click review of the set-aside backlog from the slskd panel: no path is\ntyped and the absolute inbox path never leaves the server. Strong matches\nauto-apply; uncertain ones park for review in the normal candidate-review\nscreen. Nothing to import is a no-op\n(``started=False``), never an error \u2014 and the shared import-slot gate refuses\n(409) while another beets mutation or backfill owns the slot.\n\nThe inbox ROOT is never the import target. It is the downloader's live output\ndirectory, so importing it would sweep in every folder still receiving files\nand file a PARTIAL album (whose remaining tracks then arrive and import again\nas a duplicate). Instead each top-level folder that has been quiet for\n``inbox_settle_seconds`` is handed over as its own beets toppath; folders\nstill being written are left for the next click.",
+        "description": "Start an attended import of the SETTLED inbox folders, with beets' file operation.\n\n**Review all** on the Review page, over \"Not imported yet\": no path is\ntyped; the server resolves slskd's folder itself. Strong matches\nauto-apply; uncertain ones park for review in the normal candidate-review\nscreen. Nothing to import is a no-op\n(``started=False``), never an error \u2014 and the shared import-slot gate refuses\n(409) while another beets mutation or backfill owns the slot.\n\nThe inbox ROOT is never the import target. It is the downloader's live output\ndirectory, so importing it would sweep in every folder still receiving files\nand file a PARTIAL album (whose remaining tracks then arrive and import again\nas a duplicate). Instead each top-level folder that has been quiet for\n``inbox_settle_seconds`` is handed over as its own beets toppath; folders\nstill being written are left for the next click.",
         "operationId": "review_inbox_api_acquisition_review_inbox_post",
         "responses": {
           "200": {
@@ -8871,7 +8871,7 @@
           "acquisition"
         ],
         "summary": "List Inbox Items",
-        "description": "The inbox backlog \u2014 top-level folders awaiting review, source-agnostic.\n\nRead-only. A missing/empty inbox (or the lifespan-less test client, which\nhas no ``inbox_dir``) yields an empty listing; a bank that cannot be read\nanswers 500, as ``GET /api/bank`` does.",
+        "description": "The \"Not imported yet\" list: slskd's top-level folders, minus those in review.\n\nRead-only. A missing/empty inbox (or the lifespan-less test client, which\nhas no ``inbox_dir``) yields an empty listing; a bank that cannot be read\nanswers 500, as ``GET /api/bank`` does.",
         "operationId": "list_inbox_items_api_acquisition_inbox_items_get",
         "responses": {
           "200": {
@@ -14172,7 +14172,7 @@
           "track_count"
         ],
         "title": "InboxItem",
-        "description": "One top-level inbox folder awaiting review (a backlog row).\n\n``name`` is the immediate inbox child dir (also the import target id).\n``outcome`` is best-effort: ``set_aside``/``failed`` iff a ledger entry at or\nunder this folder has that outcome, else ``None`` (a fresh drop). ``mtime`` is\na float (NEVER ``st_mtime_ns`` \u2014 a nanosecond int loses JSON precision)."
+        "description": "One top-level folder in slskd's folder that no run has imported yet.\n\n``name`` is the immediate inbox child dir (also the import target id).\n``outcome`` is best-effort: ``set_aside``/``failed`` iff a ledger entry at or\nunder this folder has that outcome, else ``None`` (a fresh drop). ``mtime`` is\na float (NEVER ``st_mtime_ns`` \u2014 a nanosecond int loses JSON precision)."
       },
       "InboxListing": {
         "properties": {
@@ -16750,7 +16750,7 @@
           "started"
         ],
         "title": "ReviewInboxResponse",
-        "description": "Result of ``POST /api/acquisition/review-inbox`` (the slskd-panel review).\n\n``started`` is True iff an attended import of the inbox was kicked off, with\n``job_id`` the running job to navigate to. An empty inbox is a no-op\n(``started=False, job_id=None``), never an error.\n\n``in_flight`` counts the inbox folders that were SKIPPED because they are\nstill receiving files. It exists so the caller can tell \"the inbox is empty\"\n(0) apart from \"nothing has settled yet\" (>0) \u2014 both return\n``started=False``, but only the first means there is nothing left to import."
+        "description": "Result of ``POST /api/acquisition/review-inbox`` (the Review page's Review all).\n\n``started`` is True iff an attended import of the inbox was kicked off, with\n``job_id`` the running job to navigate to. An empty inbox is a no-op\n(``started=False, job_id=None``), never an error.\n\n``in_flight`` counts the inbox folders that were SKIPPED because they are\nstill receiving files. It exists so the caller can tell \"the inbox is empty\"\n(0) apart from \"nothing has settled yet\" (>0) \u2014 both return\n``started=False``, but only the first means there is nothing left to import."
       },
       "SaveNamingRequest": {
         "properties": {
@@ -17108,7 +17108,8 @@
           "localDirectoryName": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 4096
               },
               {
                 "type": "null"

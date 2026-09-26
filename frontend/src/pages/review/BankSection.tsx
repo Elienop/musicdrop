@@ -138,9 +138,13 @@ function removeRowSentence(row: BankItemSummary): string {
   return "The files stay on disk, but the banked candidates are forfeited; a re-sweep will NOT pick this folder up again.";
 }
 
-/** The Remove selected dialog's sentence, from the selected rows. */
+/** The Remove selected dialog's sentence, from the selected rows. A mix
+ * states both: a held slskd folder goes back, any other row's does not. */
 function removeSelectedSentence(rows: BankItemSummary[]): string {
   if (rows.some(holdsInboxFolder)) {
+    if (rows.some((row) => row.source !== "inbox")) {
+      return "The files stay on disk. slskd downloads go back to Not imported yet; a re-sweep will NOT pick up the others.";
+    }
     return "The files stay on disk. Downloads go back to Not imported yet.";
   }
   if (rows.every((row) => row.source === "inbox")) {

@@ -724,3 +724,28 @@ def test_the_unmounted_share_defer_releases_the_status_too(tmp_path: Path) -> No
         assert s.error == expected_error, raised
         assert (s.processed, s.failed) == (0, 0), raised
         assert q._queue.qsize() == 1, raised
+
+
+def test_a_refused_layout_defers_with_apply_s_sentence(tmp_path: Path) -> None:
+    """A layout Apply refused is not a lost race for the slot.
+
+    ``LibraryRefusedError`` is a ``RuntimeError``, so it deferred through the
+    slot-race arm with no reason and the Review page read "Waiting for the
+    import slot" for as long as the refusal stood. It defers the same way, and
+    names Apply's sentence as the share outage does. Raised by the REAL
+    ``start``, from the refusal ``attach_library`` records.
+    """
+    refusal = "Apply loaded config.yaml. The Trash is the music folder."
+    q, _fake, reg, _led = _make_queue(tmp_path)
+    # No library: the gate would ask ``object()`` for its music root forever.
+    reg.attach_library(None, refusal=refusal, settings=None, beets_dir=None)
+    folder = tmp_path / "inbox" / "Album"
+    folder.mkdir(parents=True)
+    _queued_once(q, folder)
+
+    q._process_one(folder)
+
+    s = q.status()
+    assert s.error == refusal
+    assert (s.current, s.queued, s.processed, s.failed) == (None, 1, 0, 0)
+    assert q._queue.qsize() == 1

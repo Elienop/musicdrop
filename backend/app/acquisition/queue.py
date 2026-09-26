@@ -23,7 +23,7 @@ from pathlib import Path
 from app.acquisition.inbox import contain
 from app.acquisition.ledger import AcquisitionLedger
 from app.import_jobs.gates import import_gate_clear
-from app.import_jobs.registry import ImportJobRegistry
+from app.import_jobs.registry import ImportJobRegistry, LibraryRefusedError
 from app.import_jobs.runner import (
     ImportSourceRefusedError,
     LibraryRootUnavailableError,
@@ -161,7 +161,7 @@ class AcquisitionQueue:
             # ``GET /api/acquisition/status`` and both readers (the Review
             # page's "Importing now" line and the activity row's scope) already
             # reduce it with ``lastSegment``, so the rendered text is unchanged
-            # while the absolute inbox path stops leaving the server.
+            # and the status body carries no absolute path.
             # ``display_path`` because an inbox name is whatever bytes a remote
             # peer chose, and a surrogate in it would fail the JSON encode.
             self._current = display_path(folder.name)
@@ -190,11 +190,15 @@ class AcquisitionQueue:
             # "Leave status as-is" used to mean the page rendered "Importing
             # <folder>" behind a spinner for the whole outage.
             #
-            # Only the library arm carries a REASON. Losing the race for the
+            # Only the library arms carry a REASON. Losing the race for the
             # single slot is not a fault: another import genuinely is running and
             # the page shows that one, so an error line would be noise. A music
-            # share that dropped is an outage nothing else on this page names.
-            reason = str(exc) if isinstance(exc, LibraryRootUnavailableError) else None
+            # share that dropped, or a layout Apply refused (a ``RuntimeError``
+            # too, caught by the first arm), is a fault nothing else on this
+            # page names; without its sentence the page read "Waiting for the
+            # import slot" for as long as the refusal stood.
+            named = (LibraryRootUnavailableError, LibraryRefusedError)
+            reason = str(exc) if isinstance(exc, named) else None
             self._defer(folder, error=reason)
             return
         except SourcePathMissingError as exc:

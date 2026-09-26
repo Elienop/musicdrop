@@ -211,8 +211,10 @@ class ImportJobState(BaseModel):
     albums: list[ImportAlbumSummary]
     # The worker's failure message when phase == failed; None otherwise.
     error: str | None
-    # Where the import came from: "manual" (the web Start flow) or "inbox" (the
-    # unattended acquisition seam). Defaulted so manual imports need no change.
+    # Where the import came from: "manual" (``POST /api/import``: Add from folder
+    # and its re-runs), "inbox" (slskd's folder: the drain, Review all, or a row's
+    # Review), "sweep" or "bank_apply".
+    # Defaulted so manual imports need no change.
     origin: ImportOrigin = "manual"
     # So a reloaded page can re-post it ("Import them again" sends the same
     # folder with ``incremental: false``). None for a multi-folder start.

@@ -462,6 +462,35 @@ def test_an_authenticated_caller_still_gets_its_422(
     assert r.status_code == 422
 
 
+def test_an_over_long_folder_name_is_refused_before_the_remap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``localDirectoryName`` stops at 4096 characters (PATH_MAX).
+
+    Unbounded, a 128 KB name held the event loop ~7 s in the remap's
+    ``relative_to``. The secret still decides first: a stranger's over-long name
+    gets the 401, never the 422 that names the field. The name AT the cap is the
+    control that the bound is not tighter than every path slskd can report.
+    """
+    _write_config(tmp_path)
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
+    app.dependency_overrides.clear()
+    at_cap = "/downloads/" + "a" * (4096 - len("/downloads/"))
+    event = {"type": "DownloadDirectoryComplete", "localDirectoryName": at_cap + "a"}
+    with TestClient(app) as client:
+        _configure(client, base_url="http://slskd:5030", token="t", webhook_secret="hook")
+        stranger = client.post("/api/slskd/webhook", json=event, headers={"X-API-Key": "nope"})
+        over = client.post("/api/slskd/webhook", json=event, headers={"X-API-Key": "hook"})
+        event["localDirectoryName"] = at_cap
+        fits = client.post("/api/slskd/webhook", json=event, headers={"X-API-Key": "hook"})
+    assert stranger.status_code == 401
+    assert stranger.json() == {"detail": "invalid webhook token"}
+    assert over.status_code == 422
+    [error] = over.json()["detail"]
+    assert (error["type"], error["loc"]) == ("string_too_long", ["body", "localDirectoryName"])
+    assert fits.status_code == 200
+
+
 # ----- Path in slskd (the stored ``downloads_prefix``) and the miss flag -----
 
 _PATH_IN_SLSKD = "/app/downloads"

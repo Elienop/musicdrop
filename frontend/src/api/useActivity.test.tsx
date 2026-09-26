@@ -146,7 +146,7 @@ describe("useActivity", () => {
       {
         id: "acquisition:queue",
         kind: "acquisition",
-        label: "Importing from inbox",
+        label: "Importing from slskd",
         scope: "Drop One",
         state: "running",
         countsText: "3 queued",

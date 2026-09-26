@@ -39,7 +39,7 @@ vi.mock("@/api/useActiveImport", () => ({
 const runningAcquisition: ActivityRow = {
   id: "acquisition:queue",
   kind: "acquisition",
-  label: "Importing from inbox",
+  label: "Importing from slskd",
   scope: "Adele - 25",
   state: "running",
   countsText: "2 queued",
@@ -245,7 +245,7 @@ describe("LibraryDashboard", () => {
       await screen.findByRole("heading", { level: 2, name: "Acquisition" }),
     ).toBeInTheDocument();
     // JobProgress rows render verbatim (label + progress fraction).
-    expect(screen.getByText("Importing from inbox")).toBeInTheDocument();
+    expect(screen.getByText("Importing from slskd")).toBeInTheDocument();
     expect(screen.getByText("3 / 10")).toBeInTheDocument();
     // An acquisition-kind row is present → the Review deep link shows.
     expect(screen.getByRole("link", { name: "View Review" })).toHaveAttribute(
@@ -279,7 +279,7 @@ describe("LibraryDashboard", () => {
     renderWithProviders(<LibraryDashboard />);
 
     await screen.findByRole("heading", { level: 2, name: "Acquisition" });
-    expect(screen.getByText("Importing from inbox")).toBeInTheDocument();
+    expect(screen.getByText("Importing from slskd")).toBeInTheDocument();
     expect(screen.getByText("Reorganize")).toBeInTheDocument();
     // Row 4 is cut — a glance, not the popover.
     expect(screen.queryByText("Writing artist art")).toBeNull();

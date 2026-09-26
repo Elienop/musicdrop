@@ -100,8 +100,11 @@ entry carries a dated correction block where the pass changed it._
    (`beetsplug/fetchart.py:1536-1538`). beets' plugin index lists two third-party ones,
    `beets-copyartifacts` and `beets-filetote`; filetote also follows `beet move` (reference
    checkout `docs/plugins/index.rst:475-491`). Neither is evaluated.
-7. **Download providers** (owner ruling 2026-09-14, vault `decisions` #51; not started). Replaces
-   the saved "Download folders" idea; Add from folder's path is a free-text field today.
+7. **Download providers** (owner ruling 2026-09-14, vault `decisions` #51; ~~not started~~ —
+   **BUILT on `feat/sources-add-from-folder`**, branch 2, 2026-09-26, except what the bullets
+   below still owe). Replaces the saved "Download folders" idea; ~~Add from folder's path is a
+   free-text field today~~ — Add from folder offers your Folder sources and Recent folders
+   (S9), and **Browse folders** beside its path box (S7).
    - **Operation.** ONE GLOBAL SETTING, not a per-provider mode — owner ruling 2026-09-15
      (`decisions` #53): *"instead of branching this into each provider it will be a use it or not
      setting"*. Off writes `move: yes`, on writes `hardlink: yes`, into beets' own `import:` keys;
@@ -615,8 +618,12 @@ entry carries a dated correction block where the pass changed it._
      settle-timer folder watcher): on a completed job, one bounded scan of the yubal folder for
      album folders changed since the job started, imported by hardlink. Upstream, copying
      `destination` onto the Job would remove the scan.
-   - Not yet: a browse picker (a folder-listing route is a new ability to read the filesystem).
-8. **Docs: `docker-compose.yml` and README show split `/music` + `/inbox` mounts** (2026-09-14).
+   - ~~Not yet: a browse picker (a folder-listing route is a new ability to read the
+     filesystem).~~ — **BUILT (branch 2, S7)**: `GET /api/folders` behind **Browse folders**; what
+     it leaves open is under "What the folder browser leaves open".
+8. ~~**Docs: `docker-compose.yml` and README show split `/music` + `/inbox` mounts**~~
+   (2026-09-14) — **CLOSED on `feat/sources-add-from-folder`** (branch 2, S5, 2026-09-26): both
+   show ONE `/media` mount, and README's "One mount for music and downloads" says why.
    rename(2) and link(2) return EXDEV across two mount points even of the same filesystem
    (`man 2 rename`, `man 2 link`), so two bind mounts make an import move a copy-then-delete (beets'
    `util.move`, and MusicDrop's own moves) and a hardlink fail, even on one dataset. One parent
@@ -1836,10 +1843,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     the retry-after-move residual above, so it needs design.
   - A peer-named `.` or `..` leaf is refused but lights the miss line (a harmless
     misattribution).
-  - `localDirectoryName` has no length cap, and `remap_to_inbox` is quadratic in the part
-    count and runs on the event loop (~1.8 s at 62 KB; secret holders only). Pydantic's
-    `StringConstraints(max_length=…)` is the engine answer, as `StartImportRequest.path` in
-    `backend/app/models/import_api.py` already does.
+  - ~~`localDirectoryName` has no length cap, and `remap_to_inbox` is quadratic in the part
+    count and runs on the event loop~~ — **CLOSED 2026-09-26** (branch-2 final review): capped at
+    4096 characters with Pydantic's `StringConstraints`, as `StartImportRequest.path` is; over
+    it answers 422, after the secret's 401. The S4 note's "~1.8 s at 62 KB" was one sample,
+    not a cap: the request body allows far more, and a 128 KB name held the loop ~7 s (an
+    unrelated `/api/health` waited 6.9 s). 9.6 ms at the cap (measured 2026-09-26).
 
 - **What remembering imported slskd folders leaves open (2026-09-26, branch-2 S6 design
   residuals 32-40, 44).** Search words: ledger, imported, remember and hide, Not imported yet,
@@ -1961,6 +1970,32 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   - `break-all` on older path sites (`PlexSettingsPanel.tsx` ~348, `SettingsTrashPage.tsx` ~83,
     `SettingsBeetsPage.tsx` ~599/~876, `RouteErrorBoundary.tsx` ~71) splits words mid-name:
     switch them as one sweep to `wrap-anywhere`, as S9's three sites now are. Not built.
+
+- **What the branch-2 final review leaves open (2026-09-26).** New mechanisms, not built.
+  Search words: final review, Sources sentence, bank Remove, ledger FIFO, Recently landed.
+  - Settings → Sources shows S1's slskd sentence, "That’s slskd’s whole folder. Pick an album
+    inside it." (`store_layout.py` ~290, via `sources.py` ~85-87), whose remedy fits Add from
+    folder, not a Sources pin. A Sources-only sentence needs the refusal's kind. Owner's call.
+  - The bank's Remove sentence keys on `row.source === "inbox"` (`BankSection.tsx` ~128-149),
+    while the server holds a folder back by where it is (`bank/store.py` ~486): a Sweep & bank
+    row inside slskd's folder goes back to "Not imported yet", but the dialog says a re-sweep
+    will not pick it up.
+  - `.musicdrop-ledger.json` in slskd's folder is read by name at boot with no regular-file
+    check (`app/main.py` ~339 → `app/acquisition/ledger.py` ~41): a FIFO there hangs boot. Same
+    engine answer as the `sources.json` / `slskd.json` FIFO bullet under "What Settings →
+    Sources leaves open" (confuse skips a non-regular file).
+  - "Recently landed" counts only the drain's imports; after a per-row Review it reads
+    "0 imported" (`ReviewPage.tsx` ~257, ~694).
+  - At 360 px a bank row's title is cut to "Boards…" beside the "Uncertain match" badge
+    (`BankSection.tsx` ~69, ~547-556). Older than this branch, but S2 brings slskd rows into it.
+  - Installs since v0.15.0 (PR #85) keep the starter's old five-rule `replace:` block, which
+    REPLACES beets' own rules (beets reads one source, `library/library.py` ~64), `'[\\/]'`
+    included: an untagged or artist-less album renders an absolute subpath and files OUTSIDE
+    the library (`//00 .flac`; album "tmp" → `/tmp/01 ….flac`). New installs are fixed (the
+    starter lists beets' rules, 2026-09-26). For existing configs: a migration, an advisory, or
+    extending "Add recommended rules", which today APPENDS after beets' rules, so "Wait…" ends
+    "Wait..." and escapes `\.$` beside the ASCII "Wait.._" folder (`NamingPanel.tsx` ~690-702).
+    Owner's call. Search words: replace, path separator, absolute destination, untagged.
 
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth

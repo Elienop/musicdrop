@@ -237,3 +237,43 @@ def test_starter_replace_rules_map_typographic_to_ascii() -> None:
     # Spelled with escapes because the literals are indistinguishable on screen.
     assert sanitize("blink\u2010182") == "blink-182"  # U+2010 HYPHEN
     assert sanitize("Don\u2019t Stop") == "Don't Stop"  # U+2019 RIGHT SINGLE QUOTE
+
+
+def test_the_starter_files_an_untagged_album_inside_the_library(tmp_path: Path) -> None:
+    """A ``replace:`` block REPLACES beets' rules, so the starter must carry them.
+
+    beets reads ``replace`` from one source (``config["replace"].get(dict)``),
+    so the starter's old five typographic rules dropped beets' own, the path
+    separator rule included: an album with no artist, album artist or album then
+    rendered an ABSOLUTE subpath and ``Item.destination`` dropped ``directory``
+    (``//00 .flac``, measured 2026-09-26). Through the real starter and beets'
+    own destination.
+    """
+    import beets
+    import yaml
+    from beets.library import Item
+
+    handle = setup_beets(str(tmp_path / "beets"))
+    try:
+        item = Item(path=b"/downloads/x/01.flac", title="", artist="", albumartist="", album="")
+        handle.lib.add_album([item])
+        library = Path(os.fsdecode(handle.lib.directory))
+        destination = Path(os.fsdecode(item.destination()))
+        replacements = handle.lib.replacements
+    finally:
+        close_library(handle.lib)
+    assert destination.is_relative_to(library), destination
+
+    def sanitize(text: str) -> str:
+        for pattern, replacement in replacements:
+            text = pattern.sub(replacement, text)
+        return text
+
+    # The typographic rules run first, so a spelling and its ASCII twin share a name.
+    assert sanitize("Wait\u2026") == sanitize("Wait...")
+    # Every beets rule, verbatim and in beets' order, from the INSTALLED beets.
+    bundled = Path(beets.__file__).parent / "config_default.yaml"
+    defaults = list(yaml.safe_load(bundled.read_text(encoding="utf-8"))["replace"].items())
+    starter = Path(__file__).parent.parent / "app" / "beets" / "config.starter.yaml"
+    rules = list(yaml.safe_load(starter.read_text(encoding="utf-8"))["replace"].items())
+    assert rules[-len(defaults) :] == defaults

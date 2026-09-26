@@ -416,7 +416,7 @@ describe("ImportPage — entry", () => {
     expect(
       // Review all and a per-row Review also start inbox runs, and those
       // wait on the run page instead of banking.
-      await screen.findByText("An inbox import is running."),
+      await screen.findByText("An import from slskd is running."),
     ).toBeInTheDocument();
     expect(screen.queryByText(/set aside/i)).not.toBeInTheDocument();
   });
@@ -1538,7 +1538,7 @@ describe("ImportPage — live feed", () => {
     renderAt("/import");
     await screen.findByRole("link", { name: /resume/i });
     const banner = spinnerOf(
-      lineOf(screen.getByText(/an inbox import is running/i)),
+      lineOf(screen.getByText(/an import from slskd is running/i)),
     );
     const bannerTokens = banner.getAttribute("class")?.split(/\s+/) ?? [];
     expect(bannerTokens).toContain("size-5");
