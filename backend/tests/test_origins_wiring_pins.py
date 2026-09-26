@@ -95,7 +95,9 @@ def test_config_apply_reattaches_the_trash_origin_store(client: TestClient) -> N
     from app.main import app
 
     stale = Path("/stale/origins")
-    get_registry().attach_library(app.state.beets_library.lib, Path("/stale/trash"))
+    get_registry().attach_library(
+        app.state.beets_library.lib, Path("/stale/trash"), settings=None, beets_dir=None
+    )
     get_registry()._trash_origins_dir = stale
 
     assert client.post("/api/config/apply").status_code == 200

@@ -28,6 +28,7 @@ from app.bank import store
 from app.bank.fingerprint import folder_fingerprint
 from app.beets.import_session import ImportBridge, WebImportSession, _SourceFiles
 from app.beets.library import _require_id
+from app.models.bank import BankApplyDirective, BankItem
 from app.models.import_models import Recommendation
 
 
@@ -385,18 +386,159 @@ def test_sweep_without_folder_banks_nothing(
     assert store.count_items(bank_dir) == 0
 
 
-def test_non_sweep_unattended_session_never_banks(
+def _inbox_session(bridge: ImportBridge, bank_dir: Path) -> WebImportSession:
+    """slskd's drain: unattended with a bank, and NOT a sweep."""
+    session = _sweep_session(bridge, bank_dir)
+    session.sweep = False
+    return session
+
+
+def _no_match_task(monkeypatch: pytest.MonkeyPatch, folder: Path) -> ImportTask:
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        return Proposal([], BeetsRec.none)
+
+    monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
+    task = ImportTask(
+        toppath=None,
+        paths=[os.fsencode(str(folder))],
+        items=[Item(artist="Artist", album="Album", title="X", track=1, length=10.0)],
+    )
+    task.lookup_candidates([])
+    return task
+
+
+def _only_row(bank_dir: Path) -> BankItem:
+    summaries = store.list_items(bank_dir, offset=0, limit=10)
+    assert len(summaries) == 1
+    row = store.get_item(bank_dir, summaries[0].id)
+    assert row is not None
+    return row
+
+
+def test_an_unattended_session_with_a_bank_banks_an_unsure_match_as_inbox(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The inbox path (unattended=True, sweep=False) keeps chunk-1 behavior:
-    # set aside via outcome + SKIP, NO bank row.
+    # slskd's drain banks what it skips exactly as a sweep does (decisions #76):
+    # banking follows "unattended with a bank", never ``sweep``.
     match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
     bank_dir = tmp_path / "bank"
-    session = _sweep_session(ImportBridge(), bank_dir)
-    session.sweep = False
+    session = _inbox_session(bridge, bank_dir)
     folder = _album_folder(tmp_path)
     task = _make_task(match, monkeypatch, BeetsRec.medium, paths=[os.fsencode(str(folder))])
+
     assert session.choose_match(task) is Action.SKIP
+    assert bridge.pending_count() == 0  # banked, never parked
+    row = _only_row(bank_dir)
+    assert (row.source, row.reason, row.status) == ("inbox", "needs_review", "needs_review")
+    assert row.parked is not None
+    assert row.parked.folder == str(folder)
+
+
+def test_an_unattended_session_with_a_bank_banks_no_match_as_inbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bank_dir = tmp_path / "bank"
+    session = _inbox_session(ImportBridge(), bank_dir)
+    folder = _album_folder(tmp_path)
+
+    assert session.choose_match(_no_match_task(monkeypatch, folder)) is Action.SKIP
+    row = _only_row(bank_dir)
+    assert (row.source, row.reason, row.status) == ("inbox", "no_match", "needs_review")
+    assert row.folder == str(folder)
+
+
+def test_an_unattended_session_with_a_bank_banks_a_duplicate_as_inbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    match = _build_match(BeetsRec.strong)
+    bank_dir = tmp_path / "bank"
+    session = _inbox_session(ImportBridge(), bank_dir)
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    session.lib = lib
+    existing_album = lib.add_album(
+        [
+            Item(
+                albumartist="Radiohead",
+                album="OK Computer",
+                title="Airbag",
+                track=1,
+                length=234.0,
+                path=os.fsencode(str(tmp_path / "music" / "ok.mp3")),
+            )
+        ]
+    )
+    folder = _album_folder(tmp_path)
+    task = _make_task(match, monkeypatch, BeetsRec.strong, paths=[os.fsencode(str(folder))])
+    task.set_choice(match)
+    task.md_album_index = 0  # type: ignore[attr-defined]  # the index choose_match stashed
+
+    action = session.get_duplicate_action(task, [existing_album])
+
+    assert action is BeetsDuplicateAction.SKIP  # the library copy is kept
+    row = _only_row(bank_dir)
+    assert (row.source, row.reason, row.status) == ("inbox", "needs_dup_resolution", "needs_review")
+    assert row.duplicate is not None
+
+
+def test_an_attended_session_with_a_bank_banks_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No match is the one banking gate an attended run reaches (the other two
+    # park), so it is the one that proves "attended never banks".
+    bank_dir = tmp_path / "bank"
+    session = _inbox_session(ImportBridge(), bank_dir)
+    session.unattended = False
+    folder = _album_folder(tmp_path)
+
+    assert session.choose_match(_no_match_task(monkeypatch, folder)) is Action.SKIP
+    assert store.count_items(bank_dir) == 0
+
+
+def test_a_bank_apply_with_a_bank_banks_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The apply run is unattended and, since every run is handed the bank, has
+    # one; it answers from its own row, so a no-match there is never re-banked.
+    bank_dir = tmp_path / "bank"
+    session = _inbox_session(ImportBridge(), bank_dir)
+    session._directive = BankApplyDirective(action="apply")
+    folder = _album_folder(tmp_path)
+
+    assert session.choose_match(_no_match_task(monkeypatch, folder)) is Action.SKIP
+    assert store.count_items(bank_dir) == 0
+
+
+def test_a_bank_apply_that_meets_a_duplicate_banks_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The duplicate hook's twin of the pin above: an apply row whose album turns
+    # out to be in the library is answered from its directive (SKIP, the runner
+    # fails the row), never re-banked over the row being applied.
+    match = _build_match(BeetsRec.strong)
+    bank_dir = tmp_path / "bank"
+    session = _inbox_session(ImportBridge(), bank_dir)
+    session._directive = BankApplyDirective(action="apply")
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    session.lib = lib
+    existing_album = lib.add_album(
+        [
+            Item(
+                albumartist="Radiohead",
+                album="OK Computer",
+                title="Airbag",
+                track=1,
+                length=234.0,
+                path=os.fsencode(str(tmp_path / "music" / "ok.mp3")),
+            )
+        ]
+    )
+    folder = _album_folder(tmp_path)
+    task = _make_task(match, monkeypatch, BeetsRec.strong, paths=[os.fsencode(str(folder))])
+    task.set_choice(match)
+    task.md_album_index = 0  # type: ignore[attr-defined]  # the index choose_match stashed
+
+    assert session.get_duplicate_action(task, [existing_album]) is BeetsDuplicateAction.SKIP
     assert store.count_items(bank_dir) == 0
 
 

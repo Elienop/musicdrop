@@ -47,7 +47,10 @@ from app.models.import_models import (
 T = TypeVar("T")
 
 _TERMINAL = (ImportPhase.done, ImportPhase.failed)
-_INBOX_OPTS = ImportOptions(operation="move", unattended=True)
+# beets' own file operation (decisions #77) and ``-I`` ride along: a re-download
+# lands in the same folder, and history keys on the folder path alone
+# (decisions #76).
+_INBOX_OPTS = ImportOptions(operation="default", unattended=True, incremental=False)
 
 
 def _poll(
@@ -111,10 +114,10 @@ def test_queue_drains_to_registry_with_move_unattended_inbox(tmp_path: Path) -> 
         _poll(lambda: calls, lambda c: len(c) > 0)
         assert calls[0] == (
             str(folder),
-            ImportOptions(operation="move", unattended=True),
+            _INBOX_OPTS,
             "inbox",
         )
-        assert fake.received_options == ImportOptions(operation="move", unattended=True)
+        assert fake.received_options == _INBOX_OPTS
         # The drain marks the ledger + pops the dedupe entry once the import ends.
         _poll(lambda: led.seen(folder), lambda seen: seen is True)
         assert led.seen(folder) is True
@@ -163,7 +166,7 @@ def test_queue_defers_while_backfill_active(
         # Clear the backfill: the drain proceeds.
         monkeypatch.setattr("app.lyrics_jobs.registry.lyrics_backfill_active", lambda: False)
         _poll(lambda: fake.received_options, lambda o: o is not None)
-        assert fake.received_options == ImportOptions(operation="move", unattended=True)
+        assert fake.received_options == _INBOX_OPTS
     finally:
         q.stop()
 
@@ -199,7 +202,7 @@ def test_queue_defers_while_swap_lock_held(tmp_path: Path) -> None:
     try:
         asyncio.run(hold_then_release())
         _poll(lambda: fake.received_options, lambda o: o is not None)
-        assert fake.received_options == ImportOptions(operation="move", unattended=True)
+        assert fake.received_options == _INBOX_OPTS
     finally:
         q.stop()
 
@@ -315,6 +318,38 @@ def test_failed_inbox_import_marks_failed_not_imported(tmp_path: Path) -> None:
         assert s.set_aside == 0
         entry = next(e for e in led.entries() if e.path == str(folder))
         assert entry.outcome == "failed"
+    finally:
+        q.stop()
+
+
+def test_a_drain_run_whose_only_album_was_banked_no_match_is_set_aside(tmp_path: Path) -> None:
+    """A no-match album is banked like an unsure one (decisions #76), so the run
+    is ``set_aside``, not ``imported``. Its feed row reads ``skipped``, which the
+    feed's own set-aside count leaves out."""
+    no_match = AlbumOutcome(
+        album_index=0,
+        folder="/inbox/Album",
+        artist="A",
+        album="B",
+        recommendation=Recommendation.none,
+        confidence=0.0,
+        status=AlbumOutcomeStatus.skipped,
+    )
+    fake = FakeImportRunner(applied=[no_match])
+    reg = ImportJobRegistry(runner=fake)
+    led = AcquisitionLedger(tmp_path / "ledger.json")
+    q = AcquisitionQueue(import_registry=reg, ledger=led, poll_interval=0.01, busy_backoff=0.02)
+    folder = tmp_path / "inbox" / "Album"
+    folder.mkdir(parents=True)
+
+    q.start()
+    try:
+        q.enqueue(folder)
+        _poll(lambda: q.status().processed, lambda n: n >= 1)
+        s = q.status()
+        assert (s.processed, s.set_aside, s.failed) == (1, 1, 0)
+        entry = next(e for e in led.entries() if e.path == str(folder))
+        assert entry.outcome == "set_aside"
     finally:
         q.stop()
 
@@ -556,7 +591,7 @@ def test_a_stopped_inbox_import_is_recorded_failed_not_imported(tmp_path: Path) 
 
         # The inbox list annotates it rather than dropping it, so the row the
         # user re-imports by hand carries why it is there.
-        items = list_inbox(inbox, led)
+        items = list_inbox(inbox, led, held=frozenset())
         assert [(i.name, i.outcome) for i in items] == [("Radiohead - Kid A", "failed")]
         # MEASURED, and narrower than "importable again": a ledger row of ANY
         # outcome blocks the automatic drain while the folder's (mtime, size) is
@@ -689,3 +724,28 @@ def test_the_unmounted_share_defer_releases_the_status_too(tmp_path: Path) -> No
         assert s.error == expected_error, raised
         assert (s.processed, s.failed) == (0, 0), raised
         assert q._queue.qsize() == 1, raised
+
+
+def test_a_refused_layout_defers_with_apply_s_sentence(tmp_path: Path) -> None:
+    """A layout Apply refused is not a lost race for the slot.
+
+    ``LibraryRefusedError`` is a ``RuntimeError``, so it deferred through the
+    slot-race arm with no reason and the Review page read "Waiting for the
+    import slot" for as long as the refusal stood. It defers the same way, and
+    names Apply's sentence as the share outage does. Raised by the REAL
+    ``start``, from the refusal ``attach_library`` records.
+    """
+    refusal = "Apply loaded config.yaml. The Trash is the music folder."
+    q, _fake, reg, _led = _make_queue(tmp_path)
+    # No library: the gate would ask ``object()`` for its music root forever.
+    reg.attach_library(None, refusal=refusal, settings=None, beets_dir=None)
+    folder = tmp_path / "inbox" / "Album"
+    folder.mkdir(parents=True)
+    _queued_once(q, folder)
+
+    q._process_one(folder)
+
+    s = q.status()
+    assert s.error == refusal
+    assert (s.current, s.queued, s.processed, s.failed) == (None, 1, 0, 0)
+    assert q._queue.qsize() == 1

@@ -116,6 +116,11 @@ const SettingsNamingPage = lazy(() =>
     default: m.SettingsNamingPage,
   })),
 );
+const SettingsSourcesPage = lazy(() =>
+  import("@/pages/settings/SettingsSourcesPage").then((m) => ({
+    default: m.SettingsSourcesPage,
+  })),
+);
 const SettingsTrashPage = lazy(() =>
   import("@/pages/settings/SettingsTrashPage").then((m) => ({
     default: m.SettingsTrashPage,
@@ -134,7 +139,7 @@ const queryClient = createAppQueryClient();
 // IA: the sidebar (shell/Sidebar NAV_SECTIONS) groups the sections —
 // Library (/ Overview dashboard, /artists roster, /browse facets),
 // Acquire (/review, /import), Manage (/playlists, /duplicates, /settings/* —
-// beets · naming · metadata · integrations · trash · account; /settings
+// beets · naming · metadata · sources · integrations · trash · account; /settings
 // redirects to /settings/beets).
 // Detail routes hang off the artist spine:
 //   /artists/:name  that artist's albums
@@ -190,6 +195,7 @@ const router = createBrowserRouter([
           { path: "beets", element: <SettingsBeetsPage /> },
           { path: "naming", element: <SettingsNamingPage /> },
           { path: "metadata", element: <SettingsMetadataPage /> },
+          { path: "sources", element: <SettingsSourcesPage /> },
           { path: "integrations", element: <SettingsIntegrationsPage /> },
           { path: "trash", element: <SettingsTrashPage /> },
           { path: "account", element: <SettingsAccountPage /> },

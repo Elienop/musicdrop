@@ -23,8 +23,12 @@ from pathlib import Path
 from app.acquisition.inbox import contain
 from app.acquisition.ledger import AcquisitionLedger
 from app.import_jobs.gates import import_gate_clear
-from app.import_jobs.registry import ImportJobRegistry
-from app.import_jobs.runner import LibraryRootUnavailableError, SourcePathMissingError
+from app.import_jobs.registry import ImportJobRegistry, LibraryRefusedError
+from app.import_jobs.runner import (
+    ImportSourceRefusedError,
+    LibraryRootUnavailableError,
+    SourcePathMissingError,
+)
 from app.models.acquisition import AcquisitionQueueStatus, LedgerOutcome
 from app.models.import_api import ImportPhase
 from app.models.import_models import ImportOptions
@@ -34,6 +38,9 @@ logger = logging.getLogger(__name__)
 
 #: Why a stopped inbox import is recorded as failed rather than imported.
 _STOPPED_BEFORE_FINISH = "The import was stopped before this folder finished."
+
+#: Why a run that fed no album is recorded as failed rather than imported.
+_NO_ALBUM_FOUND = "beets found no album it could read in this folder."
 
 
 class AcquisitionQueue:
@@ -53,7 +60,7 @@ class AcquisitionQueue:
         self._ledger = ledger
         # When set, enqueue() re-rejects any path not contained under it — belt
         # and suspenders behind the webhook's own contain(), because the drain
-        # performs the destructive MOVE import. None = no extra check (the unit
+        # imports whatever it is handed, unattended. None = no extra check (the unit
         # tests that drive the queue directly with already-trusted folders).
         self._inbox_dir = inbox_dir
         self._swap_lock = swap_lock
@@ -103,7 +110,7 @@ class AcquisitionQueue:
         if self._stop.is_set():
             return
         # ``strict=True``: a strict descendant only. contain() admits the inbox ROOT
-        # itself, but MOVE-importing the root would sweep the whole inbox, so the
+        # itself, but importing the root would sweep the whole inbox, so the
         # root is rejected here too. Belt-and-suspenders behind the webhook's guard.
         if self._inbox_dir is not None:
             if contain(str(folder), self._inbox_dir, strict=True) is None:
@@ -154,7 +161,7 @@ class AcquisitionQueue:
             # ``GET /api/acquisition/status`` and both readers (the Review
             # page's "Importing now" line and the activity row's scope) already
             # reduce it with ``lastSegment``, so the rendered text is unchanged
-            # while the absolute inbox path stops leaving the server.
+            # and the status body carries no absolute path.
             # ``display_path`` because an inbox name is whatever bytes a remote
             # peer chose, and a surrogate in it would fail the JSON encode.
             self._current = display_path(folder.name)
@@ -165,7 +172,12 @@ class AcquisitionQueue:
         try:
             job_id = self._import_registry.start(
                 str(folder),
-                options=ImportOptions(operation="move", unattended=True),
+                # ``default`` is the file operation beets' config resolves to
+                # (decisions #77: one source of truth). ``incremental=False`` is
+                # beets' own ``-I``: slskd writes a re-download into the same
+                # folder, and history keys on the folder path alone, so a
+                # recorded folder would be skipped.
+                options=ImportOptions(operation="default", unattended=True, incremental=False),
                 origin="inbox",
             )
         except (RuntimeError, LibraryRootUnavailableError) as exc:
@@ -178,11 +190,15 @@ class AcquisitionQueue:
             # "Leave status as-is" used to mean the page rendered "Importing
             # <folder>" behind a spinner for the whole outage.
             #
-            # Only the library arm carries a REASON. Losing the race for the
+            # Only the library arms carry a REASON. Losing the race for the
             # single slot is not a fault: another import genuinely is running and
             # the page shows that one, so an error line would be noise. A music
-            # share that dropped is an outage nothing else on this page names.
-            reason = str(exc) if isinstance(exc, LibraryRootUnavailableError) else None
+            # share that dropped, or a layout Apply refused (a ``RuntimeError``
+            # too, caught by the first arm), is a fault nothing else on this
+            # page names; without its sentence the page read "Waiting for the
+            # import slot" for as long as the refusal stood.
+            named = (LibraryRootUnavailableError, LibraryRefusedError)
+            reason = str(exc) if isinstance(exc, named) else None
             self._defer(folder, error=reason)
             return
         except SourcePathMissingError as exc:
@@ -203,6 +219,13 @@ class AcquisitionQueue:
             logger.warning("inbox drain: %r %s; dropped (%r)", folder, fault, exc)
             self._finish(key, "failed", str(exc))
             return
+        except ImportSourceRefusedError as exc:
+            # The folder is or holds the library or one of ours: an inbox set to
+            # a folder that holds them. Terminal like the arm above, and caught
+            # so the refusal cannot end this thread; no ledger row, as there.
+            logger.warning("inbox drain: %r refused; dropped (%s)", folder, exc)
+            self._finish(key, "failed", str(exc))
+            return
 
         result = self._wait_for_import(job_id)
         if result is None:
@@ -210,8 +233,10 @@ class AcquisitionQueue:
         outcome, error = result
         try:
             self._ledger.mark(folder, outcome=outcome)
-        except OSError:
-            pass  # best-effort; never crash the drain on a ledger write
+        except (OSError, ValueError) as exc:
+            # Best-effort: an unwritable ledger, or a name that is not valid
+            # UTF-8, must never end this thread. The folder is simply unrecorded.
+            logger.warning("inbox drain: could not record %r; it stays listed (%r)", folder, exc)
         self._finish(key, outcome, error)
 
     def _defer(self, folder: Path, *, error: str | None) -> None:
@@ -294,8 +319,18 @@ class AcquisitionQueue:
             # (_entry_outcome). A stop accepted after the last abort point
             # raises nothing and the folder imported in full.
             return ("failed", _STOPPED_BEFORE_FINISH)
-        if state.set_aside > 0:
+        # Every album this unattended run skipped was banked: the set-aside
+        # rows and the no-match skips (``skipped``), which the feed does not
+        # count as set aside. A drain run starts no directive, so a skip here
+        # is never a decision.
+        if state.set_aside > 0 or state.progress.skipped > 0:
             return ("set_aside", None)
+        # beets drops a file it cannot read without a word, so a run can end
+        # ``done`` having fed no album at all. ``imported`` hides a folder, and
+        # only a run whose albums landed may write it (the recorder's rule), so
+        # this one is ``failed``: listed, annotated, counted as failed.
+        if not state.albums:
+            return ("failed", _NO_ALBUM_FOUND)
         return ("imported", None)
 
     @staticmethod

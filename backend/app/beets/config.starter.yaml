@@ -1,6 +1,6 @@
 # data/beets/config.yaml — MusicDrop starter
-# This file is yours. MusicDrop's Settings pages can edit it too.
-# Click Apply there, or restart MusicDrop, to load your changes.
+# This file is yours. Settings → Beets and Settings → Naming edit it in place;
+# Apply loads the change.
 
 # Library location. Paths are relative to this file's directory.
 directory: ../music         # imported files land here
@@ -13,29 +13,51 @@ plugins:
   - musicbrainz
   - deezer
 
-# Import behavior. These defaults are what the candidate-review UI expects.
+# Import behavior. Settings → Beets → Keep downloads sets move and hardlink.
 import:
   autotag: yes        # MusicDrop-driven imports always force candidate review
                       # regardless of this value; it only affects CLI `beet import` runs
-  copy: yes           # copy files into `directory`
-  move: no            # if yes, move source files instead of copying
-  write: yes          # write tags back to imported files on Apply
+  move: yes
+  write: yes          # write tags on import; a hardlinked download changes too
 
 # Full reference: https://beets.readthedocs.io/en/stable/reference/config.html
 
-# Sanitize MusicBrainz typographic Unicode when building file paths. These
-# characters are visually identical to their ASCII twins in a file browser,
-# so MB's "blink\u2010182" (U+2010 HYPHEN) mints a folder twin next to the
-# ASCII "blink-182" one. beets' built-in replace rules sanitize illegal
-# filesystem characters but deliberately leave these alone, so we add them.
-# confuse overlays this dict onto beets' defaults per-key, so the built-ins
-# survive. Keys are single-quoted so the \uXXXX escapes reach Python's re as
-# literal text (double quotes would decode them into the invisible glyphs
-# this whole block exists to catch). Keep in sync with the Naming panel's
-# "Add recommended rules" button (NamingPanel.tsx).
+# File-path replace rules. A replace: block REPLACES beets' built-in rules
+# (beets reads one source, config["replace"].get(dict)), so beets' own rules
+# are listed below, verbatim and in beets' order (beets/config_default.yaml).
+# Keep them: '[\\/]' is what stops an empty artist or album from making an
+# absolute path that files the album outside your library.
+#
+# The first five sanitize MusicBrainz typographic Unicode. These characters
+# are visually identical to their ASCII twins in a file browser, so MB's
+# "blink\u2010182" (U+2010 HYPHEN) mints a folder twin next to the ASCII
+# "blink-182" one. They run BEFORE beets' rules, so the ASCII they produce is
+# sanitized like typed ASCII ("Wait\u2026" and "Wait..." land in one folder).
+# Keys are single-quoted so the \uXXXX escapes reach Python's re as literal
+# text (double quotes would decode them into the invisible glyphs this block
+# exists to catch). Keep in sync with the Naming panel's "Add recommended
+# rules" button (NamingPanel.tsx).
 replace:
   '[\u2010\u2011\u2212]': '-'   # hyphen / non-breaking hyphen / minus sign
   '[\u2013\u2014]': '-'         # en dash / em dash
   '[\u2018\u2019\u02bc]': "'"  # curly single quotes + modifier apostrophe
   '[\u201c\u201d]': '_'         # curly double quotes (mirrors beets' " -> _)
   '\u2026': '...'                # horizontal ellipsis
+  # beets' own rules (2.14.0). Replace bad characters with _
+  # prohibited in many filesystem paths
+  '[<>:\?\*\|]': _
+  # double quotation mark "
+  '\"': _
+  # path separators: \ or /
+  '[\\/]': _
+  # starting and closing periods
+  '^\.': _
+  '\.$': _
+  # control characters
+  '[\x00-\x1f]': _
+  # dash at the start of a filename (causes command line ambiguity)
+  '^-': _
+  # Replace bad characters with nothing
+  # starting and closing whitespace
+  '\s+$': ''
+  '^\s+': ''

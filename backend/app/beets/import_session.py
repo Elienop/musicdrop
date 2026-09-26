@@ -11,6 +11,7 @@ beets imports are allowed here (inside app/beets/, CLAUDE.md rule 3).
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import queue
@@ -22,7 +23,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic, Literal, NoReturn, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Final, Generic, Literal, NoReturn, TypeVar, cast
 
 from beets import config
 from beets.autotag.match import Recommendation as BeetsRec
@@ -34,6 +35,7 @@ from beets.importer.actions import DuplicateAction as BeetsDuplicateAction
 # and must not import beets itself (CLAUDE.md rule 3).
 from beets.importer.session import ImportAbortError as ImportAbortError
 from beets.importer.session import ImportSession
+from beets.util import FilesystemError, normpath
 
 from app.bank import store as bank_store
 from app.bank.fingerprint import folder_fingerprint
@@ -49,6 +51,7 @@ from app.beets.import_mapping import (
     map_candidate_options,
 )
 from app.beets.import_operation import (
+    EVERY_RUN,
     configured_file_operation,
     file_flags,
     forced_file_operation,
@@ -741,11 +744,12 @@ class WebImportSession(ImportSession):
     """An ImportSession driven by the web UI instead of a terminal prompt."""
 
     bridge: ImportBridge
-    # Unattended (inbox) imports auto-apply strong matches and set the rest aside
-    # (SKIP, never park) so the worker never blocks on a human decision.
+    # Unattended imports (slskd's drain, a sweep) auto-apply strong matches and
+    # set the rest aside (SKIP, never park) so the worker never blocks on a human
+    # decision; with a bank dir each set-aside is also banked (see _banks).
     unattended: bool
-    # Sweep mode: unattended + bank-emitting. The runner builds sweep sessions
-    # with the bank dir; attended/inbox sessions carry sweep=False, bank_dir=None.
+    # Sweep mode: beets' import history forced on, and its bank rows say
+    # source="sweep". Banking itself does not read it.
     sweep: bool
     # Apply mode (chunk 4): when set, every decision hook answers from the
     # banked decision instead of policy. Mutually exclusive with sweep (the
@@ -811,8 +815,8 @@ class WebImportSession(ImportSession):
         # (the directive IS the decision) - the flags OR in, so a caller can
         # never construct a parked (blocking) sweep or apply.
         self.unattended = unattended or sweep or directive is not None
-        # Sweep mode additionally BANKS each set-aside (chunk 3); bank_dir is
-        # where the rows go (threaded from the runner, mirroring trash_dir).
+        # Where an unattended run banks each set-aside (threaded from the
+        # runner, mirroring trash_dir). Every run receives it; _banks decides.
         self.sweep = sweep
         self._bank_dir = bank_dir
         self._directive = directive
@@ -928,11 +932,11 @@ class WebImportSession(ImportSession):
         so beets' deleting arms (``importer/stages.py:361-365``) stay unreachable.
         We reuse the album's feed index (stashed by choose_match) so the prompt
         flips that one row, then block the serial worker until a decision arrives.
-        In sweep mode the prompt is banked (reason needs_dup_resolution) and the
-        new album SKIPped instead — the library copy stays, the decision moves to
-        the bank. The release the task was MATCHED to is banked with it (see
-        _matched_release_payload) so that later decision replays this match
-        instead of re-running the lookup.
+        An unattended run with a bank banks the prompt (reason
+        needs_dup_resolution) and SKIPs the new album instead — the library copy
+        stays, the decision moves to the bank. The release the task was MATCHED
+        to is banked with it (see _matched_release_payload) so that later
+        decision replays this match instead of re-running the lookup.
 
         Our four model actions map onto beets' enum:
         skip_new→SKIP, keep_both→KEEP, merge→MERGE, and replace→KEEP once WE have
@@ -985,7 +989,7 @@ class WebImportSession(ImportSession):
                 dup_action, found_duplicates, task=task, index=index, prompt=prompt
             )
         if self.unattended:
-            if self.sweep:
+            if self._banks():
                 self._bank_duplicate_row(
                     task, index=index, prompt=prompt, has_current_art=incoming.has_current_art
                 )
@@ -1005,7 +1009,7 @@ class WebImportSession(ImportSession):
         prompt: DuplicatePrompt,
         has_current_art: bool,
     ) -> None:
-        """Bank the collision a sweep has nobody to park it on.
+        """Bank the collision an unattended run has nobody to park it on.
 
         The prompt the attended flow would park: the user resolves
         skip/keep/replace/merge later from the Review page, and the release this
@@ -1254,7 +1258,7 @@ class WebImportSession(ImportSession):
         album. We install a per-task wrapper over the bound method at the top of
         ``choose_match`` (precedent: the ``md_album_index`` setattr at the same
         spot) so the SAME duplicate machinery the exact case already uses — the
-        park prompt, the sweep bank, the unattended SKIP, the four resolution
+        park prompt, the bank, the unattended SKIP, the four resolution
         actions via ``get_duplicate_action`` — engages unchanged for the variant.
 
         Idempotent across re-calls on one task: the pristine bound method is
@@ -1533,7 +1537,7 @@ class WebImportSession(ImportSession):
             self.bridge.note_outcome(
                 self._outcome(index, task, recommendation, AlbumOutcomeStatus.skipped)
             )
-            if self.sweep:
+            if self._banks():
                 # Bank the folder as no_match: zero candidates, so the banked
                 # decisions are as-is / as-tracks / ignore (parked stays None —
                 # the BankItem validator only requires a payload for
@@ -1569,9 +1573,9 @@ class WebImportSession(ImportSession):
         if self.unattended:
             # Unattended: the needs_review outcome above records the set-aside;
             # SKIP instead of parking so the worker never blocks on a decision.
-            if self.sweep:
-                # The sweep banks what the inbox merely skips: the exact
-                # ParkedAlbum the attended park would push, persisted instead.
+            if self._banks():
+                # The exact ParkedAlbum the attended park would push,
+                # persisted instead.
                 # The lookups were already paid for - this only serializes them.
                 self._bank_row(
                     task,
@@ -1949,6 +1953,15 @@ class WebImportSession(ImportSession):
                 )
             )
 
+    def _banks(self) -> bool:
+        """Whether this run banks what it sets aside: unattended, with a bank.
+
+        Not ``sweep``: slskd's automatic import banks every album it cannot
+        finish exactly as a sweep does (decisions #76). An attended run parks instead,
+        and a bank apply answers from its row before any banking gate.
+        """
+        return self.unattended and self._bank_dir is not None
+
     def _bank_row(
         self,
         task: ImportTask,
@@ -1964,11 +1977,12 @@ class WebImportSession(ImportSession):
         Called on the worker thread right before the caller SKIPs; the bank
         store's module lock + atomic per-row writes were designed for exactly
         this writer (the API thread reads/mutates rows concurrently). Failures
-        PROPAGATE: a sweep that cannot persist its bank becomes a failed job
-        (worker on_error), never a silent sweep-on that loses rows.
+        PROPAGATE: a run that cannot persist its bank becomes a failed job
+        (worker on_error), never a silent run-on that loses rows.
+        ``source`` is for display only; nothing decides on it.
         """
         if self._bank_dir is None:
-            return  # not a sweep session (defensive; the runner always wires it)
+            return  # narrows the type; every caller asked _banks first
         folder = self._task_folder(task)
         if not folder:
             # No folder identity (pathless task): nothing the apply runner
@@ -1977,7 +1991,7 @@ class WebImportSession(ImportSession):
         bank_store.upsert_by_folder(
             self._bank_dir,
             folder=folder,
-            source="sweep",
+            source="sweep" if self.sweep else "inbox",
             reason=reason,
             fingerprint=folder_fingerprint(Path(folder)),
             artist=_opt_str(task.source.artist),
@@ -1998,7 +2012,7 @@ class WebImportSession(ImportSession):
     ) -> ParkedAlbum | None:
         """The release this task was matched to, as a needs_review row's payload.
 
-        A sweep-banked DUPLICATE row is a decision the pipeline had already
+        A banked DUPLICATE row is a decision the pipeline had already
         made: beets only reaches the duplicate hook after the choice is set, so
         ``task.match`` is the exact release this album would have been imported
         as. Persisting it in the SAME ParkedAlbum shape a needs_review row
@@ -2224,7 +2238,7 @@ def _history_flags(
     ``forced`` resolves to — a run that HARDLINKS leaves the download in place,
     so history is what stops the same folder meeting the album a second time,
     with ``incremental_skip_later`` on so a SKIPped album is offered again.
-    Anything else (an inbox move, in_place, a ``link``/``reflink``/``copy``
+    Anything else (a move, in_place, a ``link``/``reflink``/``copy``
     config) leaves the history keys to the user.
 
     All four pin ``resume: False``: where history is ON that repeats what beets
@@ -2262,6 +2276,55 @@ def _history_flags(
         # turning history on would change what their setup does.
         return {"incremental": True, "incremental_skip_later": True, "resume": False}
     return {}
+
+
+#: The first line of a job that stopped on a cross-filesystem hardlink; beets'
+#: own line, naming both paths, follows it.
+CROSS_DEVICE_HARDLINK: Final = (
+    "Can’t hardlink across filesystems. Put downloads and library on one,"
+    " or turn off Keep downloads."
+)
+
+
+class CrossDeviceHardlinkError(Exception):
+    """A hardlink import met two filesystems. ``str()`` is our line, then beets'."""
+
+
+def is_cross_device_hardlink(exc: FilesystemError) -> bool:
+    """Whether beets raised ``exc`` because ``util.hardlink`` got ``EXDEV``.
+
+    Read from the exception, never its English: beets raises it inside
+    ``except OSError`` with the verb ``"link"`` (``util/__init__.py:586-593``),
+    so the ``OSError`` is its ``__context__``. The verb is what names the
+    hardlink: ``copy_file_range(2)`` and the reflink ioctl answer ``EXDEV`` too,
+    and a beets that let one reach a ``"copy"`` or ``"reflink"`` error must keep
+    its own text, not advise turning off Keep downloads. beets has no
+    hardlink-else-copy.
+    """
+    cause = exc.__context__
+    return exc.verb == "link" and isinstance(cause, OSError) and cause.errno == errno.EXDEV
+
+
+def source_as_walked(source: str) -> str:
+    """The folder beets walks for ``source``, a path an import was started with.
+
+    The session holds every source through beets' own ``normpath``
+    (``importer/session.py:79``), which collapses ``..`` LEXICALLY: typed
+    ``<a>/link/../Y`` walks ``<a>/Y`` wherever ``link`` points.
+    """
+    return os.fsdecode(normpath(os.fsencode(source)))
+
+
+def album_folder_under_source(folder: str, source: str) -> bool:
+    """Whether a feed row's ``folder`` is ``source`` or inside it, by whole names.
+
+    ``source`` is spelled as the caller passed it; every feed folder is derived
+    from the walked form (``WebImportSession._task_folder``), so the compare is
+    against :func:`source_as_walked`. A trailing slash on a typed path still
+    matches.
+    """
+    top = source_as_walked(source)
+    return folder == top or folder.startswith(top + os.sep)
 
 
 def run_import_worker(
@@ -2308,7 +2371,7 @@ def run_import_worker(
     ``move`` scopes the file operation to this one run: ``True`` forces a move
     (``copy=False``), ``False`` forces a copy (``move=False``). Because
     ``config["import"]`` is a process-global confuse singleton, the prior
-    move/copy values are snapshotted and restored in a ``finally`` so an inbox
+    move/copy values are snapshotted and restored in a ``finally`` so a forced
     move never leaks into the next manual import. ``None`` touches nothing — the
     manual-import default falls through to the user's beets config untouched.
 
@@ -2459,8 +2522,9 @@ def run_import_worker(
             # (``importer/session.py:136-138``) and then removes the originals
             # (``importer/tasks.py:527-534``), so a default import under a user
             # ``delete: yes`` is a move wearing the word "copy"; the config
-            # editor advises that the key is ignored.
-            "delete": False,
+            # editor advises that the key is ignored. ``loaded_file_operation``
+            # reads the same overlay, so the Settings switch reports what runs.
+            **EVERY_RUN,
         }
         # The five filing flags are pinned only when a caller NAMES an
         # operation: copy-vs-move is the user's filing preference, and a
@@ -2481,13 +2545,19 @@ def run_import_worker(
         config.set({"threaded": False, "import": forced})
         try:
             # The record of what beets did to the user's files, and the signal
-            # that an inbox import overrode their ``hardlink: yes`` (a
-            # per-request override no config advisory can carry). On
+            # that a request overrode their file operation (an explicit move or
+            # copy, Trash restore: a per-request override no config advisory
+            # can carry). On
             # ``uvicorn.error`` because an app-namespace INFO record emitted
             # nothing in the shipped container (see ``operator_logger``). Read
             # after the force, so it reports what beets will resolve.
             operator_logger.info("import file operation: %s", configured_file_operation())
-            session.run()
+            try:
+                session.run()
+            except FilesystemError as exc:
+                if is_cross_device_hardlink(exc):
+                    raise CrossDeviceHardlinkError(f"{CROSS_DEVICE_HARDLINK}\n{exc}") from exc
+                raise
             # The album is in the library the moment run() returns, so a failed
             # Trash move annotates rather than invalidates: reporting a committed
             # import as failed would re-trigger duplicate detection on retry.

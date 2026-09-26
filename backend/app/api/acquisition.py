@@ -5,12 +5,12 @@
 Option A). Under the lifespan-less test client there is no queue on
 ``app.state``, so it falls back to an idle status rather than 500.
 
-``POST /acquisition/review-inbox`` is the slskd-panel one-click review: it
-resolves the fixed inbox path SERVER-SIDE (never sent to the browser) and starts
-a normal *attended* import with ``operation="move"`` so applied albums leave the
-inbox — targeting the SETTLED top-level folders, never the inbox root (which is
-the downloader's live output dir). Nothing settled is a no-op (``started=False``),
-never an error.
+``POST /acquisition/review-inbox`` is the Review page's **Review all**: it
+resolves slskd's folder SERVER-SIDE (the request carries no path) and starts
+a normal *attended* import with ``operation="default"``, the file operation
+beets' config resolves to (decisions #77) — targeting the SETTLED top-level
+folders, never the inbox root (which is the downloader's live output dir).
+Nothing settled is a no-op (``started=False``), never an error.
 """
 
 from __future__ import annotations
@@ -25,8 +25,15 @@ import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 
-from app.acquisition.inbox import contain, count_pending, list_inbox, settled_folders
+from app.acquisition.inbox import (
+    bank_held_names,
+    contain,
+    count_pending,
+    list_inbox,
+    settled_folders,
+)
 from app.acquisition.ledger import AcquisitionLedger
+from app.api.bank import get_bank_dir
 from app.api.import_ import ensure_import_can_start, start_import_off_loop
 from app.beets.library import LibraryRootUnavailableError
 from app.config import settings
@@ -36,7 +43,11 @@ from app.import_jobs.registry import (
     LibraryRefusedError,
     get_registry,
 )
-from app.import_jobs.runner import SourcePathMissingError, refuse_unless_absent
+from app.import_jobs.runner import (
+    ImportSourceRefusedError,
+    SourcePathMissingError,
+    refuse_unless_absent,
+)
 from app.models.acquisition import (
     AcquisitionQueueStatus,
     ImportInboxItemRequest,
@@ -101,6 +112,24 @@ async def inbox_read(read: Callable[[], _T]) -> _T:
         return await run_in_threadpool(read)
 
 
+async def _held_names(inbox_dir: Path) -> frozenset[str]:
+    """The inbox entries a row in "Waiting for review" holds.
+
+    ONE bank read per request, shared by every inbox read the request makes,
+    so a route that both counts and hands over asks the bank once.
+    """
+    return await inbox_read(partial(bank_held_names, inbox_dir, get_bank_dir()))
+
+
+def _ledger(request: Request) -> AcquisitionLedger | None:
+    """The lifespan's acquisition ledger, whose ``imported`` rows hide a folder.
+
+    ``None`` under the lifespan-less test client: nothing is hidden then.
+    """
+    ledger: AcquisitionLedger | None = getattr(request.app.state, "acquisition_ledger", None)
+    return ledger
+
+
 #: The batch route's own refusal copy, for the case it can actually reach: this
 #: route hands over folders the browser is never shown, and only refuses when
 #: EVERY one of them vanished. An unreadable batch keeps the shared singular -
@@ -157,7 +186,9 @@ def _start_inbox_item(reg: ImportJobRegistry, inbox_dir: Path, name: str) -> str
         return None
     return reg.start(
         str(contained),
-        options=ImportOptions(operation="move"),
+        # beets' own file operation and ``-I``: see the drain
+        # (``AcquisitionQueue._process_one``).
+        options=ImportOptions(operation="default", incremental=False),
         origin="inbox",
     )
 
@@ -194,9 +225,12 @@ _IMPORT_SLOT_TAKEN_RESPONSE: Final = {
 @router.get("/acquisition/status")
 async def get_acquisition_status(request: Request) -> AcquisitionQueueStatus:
     inbox_dir = getattr(request.app.state, "inbox_dir", None)
-    inbox_pending = (
-        await inbox_read(partial(count_pending, inbox_dir)) if inbox_dir is not None else 0
-    )
+    inbox_pending = 0
+    if inbox_dir is not None:
+        held = await _held_names(inbox_dir)
+        inbox_pending = await inbox_read(
+            partial(count_pending, inbox_dir, _ledger(request), held=held)
+        )
     queue = getattr(request.app.state, "acquisition_queue", None)
     if queue is None:
         return AcquisitionQueueStatus(
@@ -226,7 +260,11 @@ async def get_acquisition_status(request: Request) -> AcquisitionQueueStatus:
         # validation arm for it to add to (tests/test_openapi_overlay.py).
         422: {
             "model": ErrorDetail,
-            "description": "Every folder handed over no longer exists, or cannot be read.",
+            "description": (
+                "Every folder handed over no longer exists, or cannot be read, or"
+                " one is or holds the library, MusicDrop's own data or slskd's"
+                " whole folder."
+            ),
         },
         503: _LIBRARY_REFUSED_RESPONSE,
     },
@@ -235,12 +273,12 @@ async def review_inbox(
     request: Request,
     reg: Annotated[ImportJobRegistry, Depends(get_registry)],
 ) -> ReviewInboxResponse:
-    """Start an attended, move-mode import of the SETTLED inbox folders.
+    """Start an attended import of the SETTLED inbox folders, with beets' file operation.
 
-    One-click review of the set-aside backlog from the slskd panel: no path is
-    typed and the absolute inbox path never leaves the server. Strong matches
-    auto-apply (and move out of the inbox); uncertain ones park for review in the
-    normal candidate-review screen. Nothing to import is a no-op
+    **Review all** on the Review page, over "Not imported yet": no path is
+    typed; the server resolves slskd's folder itself. Strong matches
+    auto-apply; uncertain ones park for review in the normal candidate-review
+    screen. Nothing to import is a no-op
     (``started=False``), never an error — and the shared import-slot gate refuses
     (409) while another beets mutation or backfill owns the slot.
 
@@ -257,19 +295,23 @@ async def review_inbox(
         return ReviewInboxResponse(started=False, job_id=None, pending=0)
     app_settings = getattr(request.app.state, "settings", None) or settings
     settle = float(getattr(app_settings, "inbox_settle_seconds", 60))
+    held = await _held_names(inbox_dir)
+    ledger = _ledger(request)
     folders = await inbox_read(
-        partial(settled_folders, inbox_dir, settle_seconds=settle, now=time.time())
+        partial(
+            settled_folders, inbox_dir, ledger, held=held, settle_seconds=settle, now=time.time()
+        )
     )
     if not folders:
         # Nothing to review right now — but distinguish WHY. An empty inbox is
         # "all done"; folders still receiving files are "not yet", and the caller
         # must not tell the user the inbox cleared while their rows are on screen.
-        total = await inbox_read(partial(count_pending, inbox_dir))
+        total = await inbox_read(partial(count_pending, inbox_dir, ledger, held=held))
         return ReviewInboxResponse(started=False, job_id=None, pending=0, in_flight=total)
     pending = len(folders)
     # Any listed item we did not hand over is still arriving; report it so the UI
     # can say so rather than implying the backlog is now empty.
-    total = await inbox_read(partial(count_pending, inbox_dir))
+    total = await inbox_read(partial(count_pending, inbox_dir, ledger, held=held))
     in_flight = max(0, total - pending)
     try:
         # Off the loop: ``start`` -> ``validate`` stats each handed-over folder,
@@ -293,7 +335,7 @@ async def review_inbox(
             partial(
                 reg.start,
                 [str(folder) for folder in folders],
-                options=ImportOptions(operation="move"),
+                options=ImportOptions(operation="default", incremental=False),
                 origin="inbox",
             )
         )
@@ -302,6 +344,9 @@ async def review_inbox(
         # Mapped here so the race answers rather than 500ing.
         detail = str(exc) if exc.unreadable else _BATCH_SOURCES_GONE
         raise HTTPException(status_code=422, detail=detail) from None
+    except ImportSourceRefusedError as exc:
+        # An inbox that holds the library lists the library's own folder.
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     except (LibraryRefusedError, LibraryRootUnavailableError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except RuntimeError:
@@ -314,21 +359,23 @@ async def review_inbox(
 
 @router.get("/acquisition/inbox/items")
 async def list_inbox_items(request: Request) -> InboxListing:
-    """The inbox backlog — top-level folders awaiting review, source-agnostic.
+    """The "Not imported yet" list: slskd's top-level folders, minus those in review.
 
-    Read-only + never 500: a missing/empty inbox (or the lifespan-less test
-    client, which has no ``inbox_dir``) yields an empty listing.
+    Read-only. A missing/empty inbox (or the lifespan-less test client, which
+    has no ``inbox_dir``) yields an empty listing; a bank that cannot be read
+    answers 500, as ``GET /api/bank`` does.
     """
     inbox_dir = getattr(request.app.state, "inbox_dir", None)
     if inbox_dir is None:
         return InboxListing(items=[])
-    ledger: AcquisitionLedger | None = getattr(request.app.state, "acquisition_ledger", None)
+    ledger = _ledger(request)
     app_settings = getattr(request.app.state, "settings", None) or settings
     settle = float(getattr(app_settings, "inbox_settle_seconds", 60))
     # Same window "Review all" uses, so a row's in_flight cue agrees with whether
     # that button would actually import it.
+    held = await _held_names(inbox_dir)
     items = await inbox_read(
-        partial(list_inbox, inbox_dir, ledger, settle_seconds=settle, now=time.time())
+        partial(list_inbox, inbox_dir, ledger, held=held, settle_seconds=settle, now=time.time())
     )
     return InboxListing(items=items)
 
@@ -347,7 +394,8 @@ async def list_inbox_items(request: Request) -> InboxListing:
         # The folder can be removed between this route's own is_dir check and
         # the start; the import refuses rather than filing nothing.
         422: validation_or_detail_422(
-            "The folder no longer exists or cannot be read, or the request failed validation."
+            "The folder no longer exists or cannot be read, or it is or holds the library,"
+            " MusicDrop's own data or slskd's whole folder, or the request failed validation."
         ),
         # The shared refusal PLUS this route's own ambiguous-name guard, which
         # answers with the same status.
@@ -367,7 +415,7 @@ async def import_inbox_item(
     request: Request,
     reg: Annotated[ImportJobRegistry, Depends(get_registry)],
 ) -> ReviewInboxResponse:
-    """Attended move-import of ONE inbox folder (the per-item Review action).
+    """Attended import of ONE inbox folder, the per-item Review, with beets' file operation.
 
     Takes the folder ``name`` (not a path) and re-roots it under the inbox, so a
     client value cannot escape: ``contain(strict=True)`` rejects ``../``, absolute
@@ -398,6 +446,8 @@ async def import_inbox_item(
         # 422, not the route's own 404: with the errno split this sentence is
         # accurate about WHICH condition hit, including the unreadable one that
         # "Inbox item not found" would misreport.
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except ImportSourceRefusedError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     except (LibraryRefusedError, LibraryRootUnavailableError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None

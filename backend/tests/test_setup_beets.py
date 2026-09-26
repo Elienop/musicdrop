@@ -30,8 +30,12 @@ def test_setup_copies_starter_when_missing(tmp_path: Path) -> None:
         # singleton — a force-resolve regression (e.g. BEETSDIR set after
         # resolve) would still pass the field/existence asserts above.
         assert beets.config["plugins"].as_str_seq() == ["musicbrainz", "deezer"]
-        assert beets.config["import"]["copy"].get(bool) is True
+        assert beets.config["import"]["move"].get(bool) is True
         assert beets.config["import"]["autotag"].get(bool) is True
+        # A new install moves (decisions #76.2): ``move: yes`` and no ``copy:``
+        # line, so the first flip of Keep downloads is the only file-op write.
+        assert "copy:" not in cfg.read_text()
+        assert handle.file_operation == "move"
     finally:
         close_library(handle.lib)
 
@@ -139,8 +143,33 @@ def test_starter_directory_default_container(tmp_path: Path) -> None:
     handle = setup_beets(str(tmp_path), container_music_default=True)
     try:
         text = (tmp_path / "config.yaml").read_text(encoding="utf-8")
-        assert "directory: /music" in text
+        # The library inside the one /media mount it shares with the downloads.
+        assert "directory: /media/music " in text
         assert "../music" not in text
+    finally:
+        close_library(handle.lib)
+
+
+def test_an_existing_config_is_never_rewritten_at_boot(tmp_path: Path) -> None:
+    """The control for the two above: the starter is for brand-new installs only.
+
+    An old install's file, ``directory: /music`` and ``copy: yes`` included,
+    comes out of a container boot byte for byte.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    cfg = tmp_path / "config.yaml"
+    before = (
+        f"directory: {music}   # an old install\n"
+        "library: library.db\n"
+        "plugins:\n  - musicbrainz\n"
+        "import:\n  copy: yes\n  move: no\n"
+    ).encode()
+    cfg.write_bytes(before)
+    handle = setup_beets(str(tmp_path), container_music_default=True)
+    try:
+        assert cfg.read_bytes() == before
+        assert handle.file_operation == "copy"
     finally:
         close_library(handle.lib)
 
@@ -208,3 +237,43 @@ def test_starter_replace_rules_map_typographic_to_ascii() -> None:
     # Spelled with escapes because the literals are indistinguishable on screen.
     assert sanitize("blink\u2010182") == "blink-182"  # U+2010 HYPHEN
     assert sanitize("Don\u2019t Stop") == "Don't Stop"  # U+2019 RIGHT SINGLE QUOTE
+
+
+def test_the_starter_files_an_untagged_album_inside_the_library(tmp_path: Path) -> None:
+    """A ``replace:`` block REPLACES beets' rules, so the starter must carry them.
+
+    beets reads ``replace`` from one source (``config["replace"].get(dict)``),
+    so the starter's old five typographic rules dropped beets' own, the path
+    separator rule included: an album with no artist, album artist or album then
+    rendered an ABSOLUTE subpath and ``Item.destination`` dropped ``directory``
+    (``//00 .flac``, measured 2026-09-26). Through the real starter and beets'
+    own destination.
+    """
+    import beets
+    import yaml
+    from beets.library import Item
+
+    handle = setup_beets(str(tmp_path / "beets"))
+    try:
+        item = Item(path=b"/downloads/x/01.flac", title="", artist="", albumartist="", album="")
+        handle.lib.add_album([item])
+        library = Path(os.fsdecode(handle.lib.directory))
+        destination = Path(os.fsdecode(item.destination()))
+        replacements = handle.lib.replacements
+    finally:
+        close_library(handle.lib)
+    assert destination.is_relative_to(library), destination
+
+    def sanitize(text: str) -> str:
+        for pattern, replacement in replacements:
+            text = pattern.sub(replacement, text)
+        return text
+
+    # The typographic rules run first, so a spelling and its ASCII twin share a name.
+    assert sanitize("Wait\u2026") == sanitize("Wait...")
+    # Every beets rule, verbatim and in beets' order, from the INSTALLED beets.
+    bundled = Path(beets.__file__).parent / "config_default.yaml"
+    defaults = list(yaml.safe_load(bundled.read_text(encoding="utf-8"))["replace"].items())
+    starter = Path(__file__).parent.parent / "app" / "beets" / "config.starter.yaml"
+    rules = list(yaml.safe_load(starter.read_text(encoding="utf-8"))["replace"].items())
+    assert rules[-len(defaults) :] == defaults

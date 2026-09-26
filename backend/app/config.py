@@ -166,7 +166,9 @@ class Settings(BaseSettings):
     # secrets: these env vars seed the INITIAL persisted JSON config (file > env);
     # the file is stored 0o600 and the secrets are never returned by the API.
     # ``slskd_auto_import`` is the OPERATIVE auto-import toggle — a completed slskd
-    # download imports itself only when it is on. Empty slskd_settings_dir =
+    # download imports itself only when it is on. ``slskd_downloads_prefix`` is
+    # "Path in slskd" (slskd's download folder as slskd sees it; empty = the same
+    # path as MusicDrop's). Empty slskd_settings_dir =
     # <beets_dir>/slskd. (env MUSICDROP_SLSKD_SETTINGS_DIR / _URL / _TOKEN /
     # _DOWNLOADS_PREFIX / _WEBHOOK_SECRET / _AUTO_IMPORT)
     slskd_settings_dir: str = ""

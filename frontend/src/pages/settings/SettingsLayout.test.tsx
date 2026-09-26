@@ -18,6 +18,7 @@ function renderAt(path: string) {
           { path: "beets", element: <p>beets section body</p> },
           { path: "naming", element: <p>naming section body</p> },
           { path: "metadata", element: <p>metadata section body</p> },
+          { path: "sources", element: <p>sources section body</p> },
           { path: "integrations", element: <p>integrations section body</p> },
           { path: "trash", element: <p>trash section body</p> },
           { path: "account", element: <p>account section body</p> },
@@ -36,7 +37,7 @@ describe("SettingsLayout", () => {
     expect(h1).toHaveAttribute("tabindex", "-1");
   });
 
-  test("renders the six section links in the sub-nav, in order", () => {
+  test("renders the seven section links in the sub-nav, in order", () => {
     renderAt("/settings/beets");
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     const links = within(nav).getAllByRole("link");
@@ -47,6 +48,7 @@ describe("SettingsLayout", () => {
       "/settings/beets",
       "/settings/naming",
       "/settings/metadata",
+      "/settings/sources",
       "/settings/integrations",
       "/settings/trash",
       "/settings/account",
@@ -57,6 +59,7 @@ describe("SettingsLayout", () => {
     ["/settings/beets", "Beets"],
     ["/settings/naming", "Naming"],
     ["/settings/metadata", "Metadata"],
+    ["/settings/sources", "Sources"],
     ["/settings/integrations", "Integrations"],
     ["/settings/trash", "Trash"],
     ["/settings/account", "Account"],

@@ -26,6 +26,7 @@ from beets.importer.actions import DuplicateAction as BeetsDuplicateAction
 from beets.importer.tasks import ImportTask, SingletonImportTask
 from beets.library import Item
 
+from app.bank import store as bank_store
 from app.beets.import_session import (
     ImportBridge,
     WebImportSession,
@@ -265,16 +266,21 @@ def test_duplicate_prompt_carries_release_identity(monkeypatch: pytest.MonkeyPat
     t.join(timeout=2.0)
 
 
-def test_unattended_resolve_duplicate_skips_without_parking(
-    monkeypatch: pytest.MonkeyPatch,
+def test_unattended_resolve_duplicate_banks_and_skips_without_parking(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # Unattended: a library duplicate emits the needs_dup_resolution outcome (so
-    # the feed records the set-aside) but sets SKIP without parking + blocking.
+    # Unattended with a bank (slskd's drain): a library duplicate emits the
+    # needs_dup_resolution outcome (so the feed records the set-aside), banks
+    # the prompt as source "inbox", and sets SKIP without parking + blocking.
     match = _match()
     bridge = ImportBridge()
     session = _session(bridge)
     session.unattended = True
+    session._bank_dir = tmp_path / "bank"
+    folder = tmp_path / "album"
+    folder.mkdir()
     task = _task(match, monkeypatch)
+    task.paths = [os.fsencode(str(folder))]
     task.md_album_index = 0  # type: ignore[attr-defined]  # dynamic attr (see above)
 
     action = session.get_duplicate_action(task, [_FakeAlbum(1)])
@@ -282,6 +288,8 @@ def test_unattended_resolve_duplicate_skips_without_parking(
     assert bridge.pending_count() == 0  # did NOT park
     assert action is BeetsDuplicateAction.SKIP  # new album skipped, library copy kept
     assert any(o.status is AlbumOutcomeStatus.needs_dup_resolution for o in bridge.drain_outcomes())
+    [row] = bank_store.list_items(tmp_path / "bank", offset=0, limit=10)
+    assert (row.source, row.reason, row.folder) == ("inbox", "needs_dup_resolution", str(folder))
 
 
 def test_resolve_duplicate_records_art_source(

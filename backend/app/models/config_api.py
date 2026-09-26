@@ -6,8 +6,31 @@ everything that crosses an HTTP boundary takes/returns them.
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
+
+#: What beets does with an album's files on import, after its own precedence
+#: (``app/beets/import_operation.py::file_operation``). ``reflink_auto`` is
+#: ``reflink: auto``, which copies where a clone can't be made.
+FileOperation = Literal["move", "copy", "link", "hardlink", "reflink", "reflink_auto", "in_place"]
+
+
+class ImportOperation(BaseModel):
+    """What imports do with the files, as loaded at boot or by the last Apply."""
+
+    operation: FileOperation
+
+
+class SetImportOperation(BaseModel):
+    """Keep downloads on (beets hardlinks) or off (beets moves), then reload beets.
+
+    ``base_sha256`` is ``GET /api/config``'s ``sha256``: a file changed since
+    then is refused, as a Save is.
+    """
+
+    keep_downloads: bool
+    base_sha256: str
 
 
 class BeetsConfigSnapshot(BaseModel):

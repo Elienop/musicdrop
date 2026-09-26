@@ -28,7 +28,11 @@ from app.import_jobs.registry import (
     LibraryRefusedError,
     get_registry,
 )
-from app.import_jobs.runner import InLibraryCopyError, SourcePathMissingError
+from app.import_jobs.runner import (
+    ImportSourceRefusedError,
+    InLibraryCopyError,
+    SourcePathMissingError,
+)
 from app.models.errors import ErrorDetail, validation_or_detail_422
 from app.models.import_api import (
     ActiveImportStatus,
@@ -46,6 +50,12 @@ from app.models.import_models import (
 from app.wire import AmbiguousDisplayName, resolve_posted_path
 
 _IMPORT_ALBUM_NOT_FOUND = "Import album not found"
+#: The 409 when a posted path's placeholder matches two folders. Shared with the
+#: folder browser, which takes the same display-form path back.
+AMBIGUOUS_FOLDERS_DETAIL: Final = (
+    "Two folders display under the same name because their names are "
+    "not valid UTF-8. Rename one on disk to tell them apart."
+)
 #: The stop route's 409 body and the description its ``responses=`` block declares.
 _IMPORT_NOT_RUNNING = "That import is no longer running."
 
@@ -105,9 +115,10 @@ async def get_active_import(
     ``active`` is ``True`` exactly while the registry's single slot is in
     ``_ACTIVE_PHASES`` (``POST /api/config/apply`` 409s in that case); ``job_id``
     carries the resume target (``None`` when idle). The probe also surfaces the
-    active import's ``origin`` (manual/inbox) and set-aside ``needs_review_count``
-    so the Resume cue can flag an unattended inbox import. All come from one
-    ``active_status()`` call so they can never disagree.
+    active import's ``origin`` (manual/inbox), which names an inbox run in the
+    Resume banner, and set-aside ``needs_review_count``, which the nav Review
+    badge reads. All come from one ``active_status()`` call so they can never
+    disagree.
     """
     return reg.active_status()
 
@@ -244,13 +255,14 @@ def ensure_import_can_start(request: Request) -> None:
                 " display under the same name."
             ),
         },
-        # Two refusals of a well-formed request the importer declines on its
+        # Three refusals of a well-formed request the importer declines on its
         # merits, so they stay 422 - which means this route returns BOTH 422
         # bodies (see app/models/errors.py).
         422: validation_or_detail_422(
             "The source folder does not exist or cannot be read, or a copy-mode"
             " import was asked for a folder inside the music library, or the"
-            " request failed validation."
+            " folder is or holds the library or MusicDrop's own data, or it is or"
+            " holds slskd's whole folder, or the request failed validation."
         ),
         503: _LIBRARY_REFUSED_RESPONSE,
     },
@@ -295,11 +307,7 @@ async def start_import(
             path = await run_in_threadpool(resolve_posted_path, body.path)
         except AmbiguousDisplayName:
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    "Two folders display under the same name because their names are "
-                    "not valid UTF-8. Rename one on disk to tell them apart."
-                ),
+                status_code=status.HTTP_409_CONFLICT, detail=AMBIGUOUS_FOLDERS_DETAIL
             ) from None
         try:
             # ``reg.start`` -> ``runner.validate`` stats the caller's path, and a stat on
@@ -327,10 +335,10 @@ async def start_import(
             # process-wide tokens, shared with every sync ``Depends`` and the sign-in
             # derive, so the rest of the app keeps 39 however many callers arrive.
             job_id = await run_in_threadpool(partial(reg.start, path, options=body.options))
-        except (SourcePathMissingError, InLibraryCopyError) as exc:
+        except (SourcePathMissingError, ImportSourceRefusedError, InLibraryCopyError) as exc:
             # Guard refusals (validated before any slot was taken): actionable 422.
-            # Kept as two types so a caller can tell the missing source from the
-            # in-library copy; the status and the body shape are the same.
+            # Kept as three types so a caller can tell them apart; the status and
+            # the body shape are the same.
             raise HTTPException(status_code=422, detail=str(exc)) from None
         except (LibraryRefusedError, LibraryRootUnavailableError) as exc:
             # Apply loaded or put back a refused layout, or the music share is not there: an

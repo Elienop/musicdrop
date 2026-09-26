@@ -228,11 +228,40 @@ def _either_shape_422(description: str, own_body: dict[str, object]) -> dict[str
     Raw rather than ``{"model": ...}`` on purpose: a model would replace
     FastAPI's generated entry and lose the validation shape (module docstring).
     """
-    schema = {"anyOf": [own_body, {"$ref": _VALIDATION_ERROR_REF}]}
+    return _any_of_response(description, [own_body, {"$ref": _VALIDATION_ERROR_REF}])
+
+
+def _any_of_response(description: str, arms: list[dict[str, object]]) -> dict[str, object]:
+    """A raw response object whose body is any one of ``arms``."""
     return {
         "description": description,
-        "content": {"application/json": {"schema": schema}},
+        "content": {"application/json": {"schema": {"anyOf": arms}}},
     }
+
+
+def detail_or_model(model: type[BaseModel], description: str) -> dict[str, object]:
+    """A non-422 entry for a status answered with a sentence OR ``model``.
+
+    For ``POST /api/config/import-operation``'s 409: a sentence for a running
+    job or unapplied edits, the Save's conflict body for a changed file.
+    """
+    return _any_of_response(description, [{"$ref": _ERROR_DETAIL_REF}, _inlined_json_schema(model)])
+
+
+def validation_detail_or_model_422(model: type[BaseModel], description: str) -> dict[str, object]:
+    """:func:`validation_or_detail_422` with ``model`` as a third body.
+
+    For a route whose own 422 is a sentence, or ``model`` where it runs Apply's
+    reload (``POST /api/config/import-operation``).
+    """
+    return _any_of_response(
+        description,
+        [
+            {"$ref": _ERROR_DETAIL_REF},
+            _inlined_json_schema(model),
+            {"$ref": _VALIDATION_ERROR_REF},
+        ],
+    )
 
 
 def validation_or_detail_422(description: str) -> dict[str, object]:

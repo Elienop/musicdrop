@@ -39,6 +39,7 @@ from app.import_jobs.gates import import_gate_clear
 from app.import_jobs.registry import ImportJobRegistry
 from app.import_jobs.runner import (
     ABSENT_ERRNOS,
+    ImportSourceRefusedError,
     LibraryRootUnavailableError,
     SourcePathMissingError,
     unreadable_reason,
@@ -230,11 +231,12 @@ def _row_error(exc: Exception) -> str:
     string opens. So it refines the ``decide_again`` headline rather than
     repeating it ("check the log FIRST").
 
-    It deliberately does not blame the banked folder. The two paths that refuse
-    BEFORE an import starts - the fingerprint's own EACCES and the start-time
-    refusal - already answer ``fix_folder`` in ``_apply_one``, so what lands
+    It deliberately does not blame the banked folder. The three paths that
+    refuse BEFORE an import starts - the fingerprint's own EACCES, the
+    start-time unreadable refusal and the start-time refusal for WHERE the
+    folder is - already answer ``fix_folder`` in ``_apply_one``, so what lands
     here is whatever is left, and "fix the folder" would be a guess about it.
-    (Only those two were measured. Both gates STAT the folder rather than
+    (Only those three were measured. Every gate STATs the folder rather than
     opening its files, so this does not claim every unreadable-folder fault is
     caught up there.)
     """
@@ -342,6 +344,12 @@ class BankApplyRunner:
                 # everything ``str.isprintable()`` is False for, U+2028 and U+202E
                 # included.
                 logger.exception("bank apply failed for %r", item.folder)
+                # Blind, unlike every write after the claim: this arm also
+                # catches the claim's own write raising, when the row is still
+                # ``queued``, and ``expected="applying"`` would drop that failure
+                # unrecorded. The cost is a crash landing just after a re-bank
+                # marks the fresh row ``failed`` - readable and decidable, never
+                # a row with no decision that every read refuses.
                 try:
                     bank_store.set_status(
                         self._bank_dir,
@@ -368,7 +376,8 @@ class BankApplyRunner:
         """Whether the folder check ended this row, having recorded why.
 
         ``True`` means a terminal status is ALREADY written (``stale``, or
-        ``failed`` + ``fix_folder``) and the caller must only return. Named for
+        ``failed`` + ``fix_folder``), or refused because the row was re-banked
+        meanwhile, and the caller must only return. Named for
         the write rather than for the folder: the EACCES arm does NOT claim the
         folder stopped matching - it claims nobody can tell, which is why it
         writes ``fix_folder`` and never ``stale``.
@@ -383,7 +392,9 @@ class BankApplyRunner:
         except FileNotFoundError:
             # ``folder_fingerprint``'s own "the folder is gone" signal. Raised by
             # hand, so its errno is UNSET and the errno test below would miss it.
-            bank_store.set_status(self._bank_dir, item_id, "stale", error=_STALE_GONE_ERROR)
+            bank_store.set_status(
+                self._bank_dir, item_id, "stale", error=_STALE_GONE_ERROR, expected="applying"
+            )
             return True
         except OSError as exc:
             # Widened from FileNotFoundError alone: ``Path.is_dir`` inside the
@@ -394,7 +405,9 @@ class BankApplyRunner:
             # 2026-09-20). ``ABSENT_ERRNOS`` is the import guard's own set,
             # imported rather than re-spelled so the two splits cannot drift.
             if exc.errno in ABSENT_ERRNOS:
-                bank_store.set_status(self._bank_dir, item_id, "stale", error=_STALE_GONE_ERROR)
+                bank_store.set_status(
+                    self._bank_dir, item_id, "stale", error=_STALE_GONE_ERROR, expected="applying"
+                )
             else:
                 # ``fix_folder``: the folder IS there and the operator can make
                 # it readable, so the banner has to say that rather than the bare
@@ -405,10 +418,13 @@ class BankApplyRunner:
                     "failed",
                     error=unreadable_source_sentence(exc),
                     error_recovery="fix_folder",
+                    expected="applying",
                 )
             return True
         if current != claimed.fingerprint:
-            bank_store.set_status(self._bank_dir, item_id, "stale", error=_STALE_CHANGED_ERROR)
+            bank_store.set_status(
+                self._bank_dir, item_id, "stale", error=_STALE_CHANGED_ERROR, expected="applying"
+            )
             return True
         return False
 
@@ -421,6 +437,11 @@ class BankApplyRunner:
         claimed = bank_store.set_status(self._bank_dir, item.id, "applying", expected="queued")
         if claimed is None:
             return
+        # From here every write is a compare-and-set on ``applying``: slskd's
+        # drain can re-bank the folder while it applies (decisions #76), and a
+        # blind write would turn that fresh ``needs_review`` row into ``stale``,
+        # ``failed``, or a ``done``/``queued`` row with no decision, which
+        # every read refuses.
         if self._row_stopped_by_folder_check(item.id, claimed):
             return
         # Enforced skip_new, deliberately BETWEEN the staleness checks and the
@@ -429,7 +450,9 @@ class BankApplyRunner:
         # import has been started - which is the whole point, since "skip new"
         # means nothing may be imported at all.
         if self._skip_new_is_enforced(claimed):
-            bank_store.set_status(self._bank_dir, item.id, "done", error=None, album_id=None)
+            bank_store.set_status(
+                self._bank_dir, item.id, "done", error=None, album_id=None, expected="applying"
+            )
             return
         # Read BEFORE the import starts (see the helper): it only feeds
         # classification, so nothing about the run changes either way.
@@ -450,7 +473,10 @@ class BankApplyRunner:
             # check and start() (TOCTOU, acquisition's defer posture): revert,
             # back off, retry next pass. Without the second arm the row failed
             # permanently on a share that was merely unmounted (measured).
-            bank_store.set_status(self._bank_dir, item.id, "queued")
+            # A compare-and-set like the claim: a folder re-banked meanwhile is
+            # a fresh needs_review row, and a blind write would make it a queued
+            # row with no decision, which every read refuses.
+            bank_store.set_status(self._bank_dir, item.id, "queued", expected="applying")
             self._stop.wait(self._busy_backoff)
             return
         except SourcePathMissingError as exc:
@@ -483,16 +509,38 @@ class BankApplyRunner:
                     "failed",
                     error=str(exc),
                     error_recovery="fix_folder",
+                    expected="applying",
                 )
             else:
-                bank_store.set_status(self._bank_dir, item.id, "stale", error=_STALE_GONE_ERROR)
+                bank_store.set_status(
+                    self._bank_dir, item.id, "stale", error=_STALE_GONE_ERROR, expected="applying"
+                )
+            return
+        except ImportSourceRefusedError as exc:
+            # The row's folder is or holds the library or one of ours, or is or
+            # holds slskd's whole folder (a task collapsed onto it), where one
+            # banked decision would answer for every album there. Its own arm,
+            # not the catch-all: deciding again fails identically, and
+            # ``fix_folder`` is the least-wrong recovery that exists (its banner
+            # still says "decide again"; removing the row is the real remedy,
+            # recorded in BACKLOG). The sentence carries no path.
+            bank_store.set_status(
+                self._bank_dir,
+                item.id,
+                "failed",
+                error=str(exc),
+                error_recovery="fix_folder",
+                expected="applying",
+            )
             return
         try:
             state = self._wait_for_result(job_id)
         except KeyError:
             # The slot was replaced before the result could be read (tiny
             # window): never assume success.
-            bank_store.set_status(self._bank_dir, item.id, "failed", error=_UNCONFIRMED_ERROR)
+            bank_store.set_status(
+                self._bank_dir, item.id, "failed", error=_UNCONFIRMED_ERROR, expected="applying"
+            )
             return
         if state is None:
             return  # shutting down mid-apply; startup reconciliation reverts
@@ -505,6 +553,7 @@ class BankApplyRunner:
             error=error,
             album_id=album_id,
             error_recovery=recovery,
+            expected="applying",
         )
 
     def _refresh_stored_duplicate(
@@ -520,7 +569,8 @@ class BankApplyRunner:
         stored prompt is what refused the apply (stale consent).
 
         Still inside the ``applying`` window, so the row cannot be decided or
-        rescanned between this write and the status flip. A failure to read the
+        rescanned between this write and the status flip; a re-bank can, which is
+        why the write is a compare-and-set like the flip. A failure to read the
         prompt still fails the row with its note, one retry short of a fresh one.
         """
         if status != "failed":
@@ -530,7 +580,7 @@ class BankApplyRunner:
                 prompt = self._import_registry.duplicate_prompt(job_id, album.index)
             except KeyError:
                 continue
-            bank_store.refresh_duplicate(self._bank_dir, item.id, prompt)
+            bank_store.refresh_duplicate(self._bank_dir, item.id, prompt, expected="applying")
             return
 
     def _skip_new_is_enforced(self, item: BankItem) -> bool:
@@ -661,8 +711,8 @@ class BankApplyRunner:
         those are the only failures whose error tells the user NOT to decide
         again; every other outcome's recovery IS a re-decide, so the banner's
         "decide again to retry" headline stays true. The third recovery
-        (``fix_folder``) is not returned here: the two paths that refuse BEFORE
-        an import starts write it themselves in ``_apply_one``, and this
+        (``fix_folder``) is not returned here: the three paths that refuse
+        BEFORE an import starts write it themselves in ``_apply_one``, and this
         classifies a job that RAN, on what it landed.
 
         Decision-aware, and ``done`` always needs POSITIVE evidence (a

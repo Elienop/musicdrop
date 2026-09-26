@@ -110,9 +110,10 @@ def protected_entries(
 
     The five the layout rule is about — with ``library_path``'s DIRECTORY, since
     the file itself is not a tree — plus the exports, the stores and the caches.
-    Read twice: :func:`protected_trees` turns it into identities for the movers,
-    and ``api/reorganize._ignore_dirs`` hands the paths to the orphan sweep, so
-    the sweep spares what the movers refuse.
+    Read three times: :func:`protected_trees` turns it into identities for the
+    movers, ``api/reorganize._ignore_dirs`` hands the paths to the orphan sweep,
+    so the sweep spares what the movers refuse, and
+    ``store_layout.import_source_refusal`` refuses an import start from them.
     """
     return [
         (music_dir, "the music library", "`directory:` in config.yaml"),

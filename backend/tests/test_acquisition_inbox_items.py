@@ -20,6 +20,9 @@ from app.import_jobs.fakes import FakeImportRunner
 from app.import_jobs.registry import reset_registry
 from app.main import app
 
+# Every route here reads the bank; keep it in the test's tmp dir.
+pytestmark = pytest.mark.usefixtures("inbox_bank_dir")
+
 _SENTINEL = object()
 
 
@@ -136,7 +139,7 @@ def test_list_inbox_annotates_set_aside_without_filtering(tmp_path: Path) -> Non
 # ----- single-folder import -----
 
 
-def test_import_inbox_item_starts_attended_move(tmp_path: Path) -> None:
+def test_import_inbox_item_starts_attended_with_beets_file_operation(tmp_path: Path) -> None:
     inbox = tmp_path / "inbox"
     _album(inbox, "Echoes 4412", tracks=2)
     fake = FakeImportRunner(parked=[])
@@ -149,8 +152,11 @@ def test_import_inbox_item_starts_attended_move(tmp_path: Path) -> None:
         assert body["started"] is True
         assert body["job_id"]
         assert fake.received_options is not None
-        assert fake.received_options.operation == "move"
+        # beets' own file operation, whatever the config says (decisions #77).
+        assert fake.received_options.operation == "default"
         assert fake.received_options.unattended is False
+        # beets' ``-I``: a re-download into the same folder is never skipped.
+        assert fake.received_options.incremental is False
         state = client.get(f"/api/import/{body['job_id']}").json()
         assert state["origin"] == "inbox"
 
@@ -223,7 +229,8 @@ def test_listing_flags_a_still_arriving_folder_as_in_flight(tmp_path: Path) -> N
     for path in [inbox / "Settled", *(inbox / "Settled").rglob("*")]:
         os.utime(path, (old, old))
 
-    rows = {i.name: i.in_flight for i in list_inbox(inbox, None, settle_seconds=60)}
+    listed = list_inbox(inbox, None, held=frozenset(), settle_seconds=60)
+    rows = {i.name: i.in_flight for i in listed}
     assert rows == {"Settled": False, "Arriving": True}
 
 
@@ -235,4 +242,4 @@ def test_listing_defaults_to_not_in_flight_without_a_window(tmp_path: Path) -> N
     folder = inbox / "Fresh"
     folder.mkdir(parents=True)
     (folder / "01 track.flac").write_bytes(b"\0")
-    assert [i.in_flight for i in list_inbox(inbox, None)] == [False]
+    assert [i.in_flight for i in list_inbox(inbox, None, held=frozenset())] == [False]

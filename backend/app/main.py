@@ -23,6 +23,7 @@ from app.api.config_ import router as config_router
 from app.api.disk_sync import router as disk_sync_router
 from app.api.duplicates import router as duplicates_router
 from app.api.events import router as events_router
+from app.api.folders import router as folders_router
 from app.api.health import router as health_router
 from app.api.import_ import router as import_router
 from app.api.lyrics import router as lyrics_router
@@ -31,6 +32,7 @@ from app.api.plex import router as plex_router
 from app.api.reorganize import router as reorganize_router
 from app.api.search import router as search_router
 from app.api.slskd import router as slskd_router
+from app.api.sources import router as sources_router
 from app.api.stats import router as stats_router
 from app.api.trash import router as trash_router
 from app.artwork.cache import ArtistImageCache
@@ -318,6 +320,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         bank_dir=get_bank_dir(),
         playlists_dir=get_playlists_dir(),
         trash_origins_dir=boot_origins_dir,
+        settings=settings,
+        beets_dir=handle.beets_dir,
     )
     import_registry.attach_event_broker(app.state.event_broker)
 
@@ -327,12 +331,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # while the import slot / backfills / the swap lock are busy (it consumes the
     # existing gate; it is not a new mutex participant). Built before the ``try``
     # so it is in scope for the ``finally`` teardown.
-    from app.acquisition.inbox import resolve_inbox_dir
+    from app.acquisition.inbox import record_imported, resolve_inbox_dir
     from app.acquisition.ledger import AcquisitionLedger
     from app.acquisition.queue import AcquisitionQueue
 
     inbox_dir = resolve_inbox_dir(settings, handle)
     ledger = AcquisitionLedger(inbox_dir / ".musicdrop-ledger.json")
+    # Every finished run that landed a folder inside slskd's folder records it,
+    # whoever started it (decisions #77), so "Not imported yet" hides it.
+    import_registry.attach_import_recorder(
+        lambda folders: record_imported(ledger, inbox_dir, folders)
+    )
     acquisition_queue = AcquisitionQueue(
         import_registry=import_registry,
         ledger=ledger,
@@ -342,6 +351,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.acquisition_queue = acquisition_queue
     app.state.inbox_dir = inbox_dir
     app.state.acquisition_ledger = ledger  # the Review page lists + annotates the inbox backlog
+    # Whether slskd's last webhook missed Path in slskd (``app/api/slskd.py``).
+    app.state.slskd_last_download_missed = False
 
     # Bank reconciliation: rows stuck in "applying" from a mid-apply crash
     # revert to needs_review with a note (never blind-requeued). Being the first
@@ -500,6 +511,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # of building its own. Both attributes are set before the `try`, so the
         # deletes cannot race a half-built lifespan.
         del app.state.artist_image_sources
+        # And the slskd miss flag, whose reader falls back to False: a leaked True
+        # would show a later lifespan-less test a miss it never had.
+        del app.state.slskd_last_download_missed
         # Only what this lifespan created: a secret pre-seeded by the suite
         # must outlive the block, or every test after the first
         # ``with TestClient(app)`` would run against a gate with no key and 401.
@@ -670,6 +684,7 @@ app.include_router(artists_router, prefix="/api")
 app.include_router(browse_router, prefix="/api")
 app.include_router(search_router, prefix="/api")
 app.include_router(import_router, prefix="/api")
+app.include_router(folders_router, prefix="/api")
 app.include_router(config_router, prefix="/api")
 app.include_router(duplicates_router, prefix="/api")
 app.include_router(lyrics_router, prefix="/api")
@@ -679,6 +694,7 @@ app.include_router(stats_router, prefix="/api")
 app.include_router(playlists_router, prefix="/api")
 app.include_router(plex_router, prefix="/api")
 app.include_router(slskd_router, prefix="/api")
+app.include_router(sources_router, prefix="/api")
 app.include_router(acquisition_router, prefix="/api")
 app.include_router(bank_router, prefix="/api")
 app.include_router(trash_router, prefix="/api")

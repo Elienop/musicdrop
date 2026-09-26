@@ -124,7 +124,7 @@ function importRow(status: ActiveImportStatus | undefined): ActivityRow | null {
     return null;
   }
   // An inbox-origin import is already represented by the acquisition row
-  // ("Importing from inbox") — rendering both would double-count one job.
+  // ("Importing from slskd") — rendering both would double-count one job.
   if (status.origin === "inbox") {
     return null;
   }
@@ -171,7 +171,7 @@ function acquisitionRow(
   return {
     id: "acquisition:queue",
     kind: "acquisition",
-    label: "Importing from inbox",
+    label: "Importing from slskd",
     scope: status.current ?? undefined,
     state: "running",
     countsText: status.queued > 0 ? `${status.queued} queued` : undefined,

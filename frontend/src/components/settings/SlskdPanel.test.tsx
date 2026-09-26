@@ -1,7 +1,7 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { SlskdPanel } from "@/components/settings/SlskdPanel";
 import { renderWithProviders } from "@/test/render";
@@ -33,6 +33,12 @@ function stubSecureContext() {
 
 const SETTINGS = `${window.location.origin}/api/slskd/settings`;
 const TEST_URL = `${window.location.origin}/api/slskd/test`;
+const IMPORT_OP_URL = `${window.location.origin}/api/config/import-operation`;
+/** The auto-import switch's help, as the switch reads it. */
+const AUTO_IMPORT_HELP =
+  "A finished download imports itself. Anything it can’t finish waits in Review.";
+/** Path in slskd's help, named by slskd.yml's own key. */
+const HELP = "slskd’s download folder (directories.downloads), as slskd sees it.";
 
 function settings(overrides: Record<string, unknown> = {}) {
   return {
@@ -41,14 +47,32 @@ function settings(overrides: Record<string, unknown> = {}) {
     auto_import: false,
     has_token: false,
     has_webhook_secret: false,
+    last_download_missed: false,
+    folder: "/downloads",
+    folder_exists: true,
     ...overrides,
   };
 }
 
+// The card's files line reads the operation beets loaded: `move` unless a
+// test registers its own.
+beforeEach(() => {
+  server.use(
+    http.get(IMPORT_OP_URL, () => HttpResponse.json({ operation: "move" })),
+  );
+});
+
 describe("SlskdPanel", () => {
   // The panel is settings-only now (the set-aside/review surface moved to the
-  // Review page), so the only request it makes is GET /api/slskd/settings —
-  // each test registers it.
+  // Review page). It reads GET /api/slskd/settings, which each test registers,
+  // and the import operation, which the beforeEach above answers.
+
+  test("a settings read that fails says so", async () => {
+    server.use(http.get(SETTINGS, () => new HttpResponse(null, { status: 500 })));
+    renderWithProviders(<SlskdPanel />);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Couldn’t load slskd settings.");
+  });
 
   test("renders a real h2 heading (not a CardTitle div)", async () => {
     server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
@@ -190,11 +214,218 @@ describe("SlskdPanel", () => {
     expect(screen.getByRole("button", { name: /copy/i })).toBeInTheDocument();
   });
 
-  test("points to the Review page for the set-aside backlog (no inline activity)", async () => {
+  test("labels the prefix field Path in slskd, with its placeholder and help", async () => {
     server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
     renderWithProviders(<SlskdPanel />);
 
-    const link = await screen.findByRole("link", { name: /review/i });
+    const field = await screen.findByLabelText("Path in slskd");
+    // Empty is usually right (slskd sees the same path), so the placeholder
+    // names that case instead of showing a path that reads as one to copy.
+    expect(field).toHaveAttribute("placeholder", "Same as Folder");
+    // The help is split by a <code> around the key name, so match the paragraph.
+    expect(
+      screen.getByText((_, el) => el?.tagName === "P" && el.textContent === HELP),
+    ).toBeInTheDocument();
+    expect(field).toHaveAccessibleDescription(HELP);
+    // The secret's help is split by a <code>, so match the whole paragraph.
+    expect(
+      screen.getByText(
+        (_, el) =>
+          el?.tagName === "P" &&
+          el.textContent === "The secret slskd sends as X-API-Key with each webhook.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test("the webhook snippet sets slskd's own retry beside call:", async () => {
+    server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
+    renderWithProviders(<SlskdPanel />);
+
+    const block = await screen.findByText(/DownloadDirectoryComplete/);
+    const text = block.textContent ?? "";
+    // `retry` is a sibling of `call` (6 spaces), after the headers, with
+    // `attempts` under it (8), spelled as slskd spells it. Nested under
+    // `call:` instead, slskd would not read it and would try only once.
+    expect(text).toContain("\n      call:\n");
+    expect(text).toContain(
+      "            value: <your webhook secret>\n      retry:\n        attempts: 10",
+    );
+  });
+
+  test("says when the last download didn't match Path in slskd", async () => {
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings({ last_download_missed: true }))),
+    );
+    renderWithProviders(<SlskdPanel />);
+
+    const line = await screen.findByText("Last download didn’t match Path in slskd.");
+    // A remembered state, not an event: an alert role would be announced on
+    // every visit to Settings.
+    expect(line.closest("p")).not.toHaveAttribute("role");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    // The field it is about is described by its help AND the miss line.
+    expect(screen.getByLabelText("Path in slskd")).toHaveAccessibleDescription(
+      `${HELP} Last download didn’t match Path in slskd.`,
+    );
+  });
+
+  test("shows no miss line when the last download matched", async () => {
+    server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
+    renderWithProviders(<SlskdPanel />);
+
+    // Control: the editor has rendered, so an absent line is not a load race.
+    const field = await screen.findByLabelText("Path in slskd");
+    expect(screen.queryByText(/didn.t match Path in slskd/)).not.toBeInTheDocument();
+    // Only the help describes the field while the line is absent, and no id
+    // it names dangles (a missing id is dropped silently from the description).
+    expect(field).toHaveAccessibleDescription(HELP);
+    const ids = field.getAttribute("aria-describedby")?.split(" ") ?? [];
+    expect(ids.filter((id) => document.getElementById(id) === null)).toEqual([]);
+  });
+
+  test("the auto-import help is a full sentence that links Review", async () => {
+    server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
+    renderWithProviders(<SlskdPanel />);
+
+    // The link sits in the switch's own help; the footer line it replaced is
+    // gone, so this is the card's only Review link.
+    const link = await screen.findByRole("link", { name: "Review" });
     expect(link).toHaveAttribute("href", "/review");
+    expect(link.closest("p")?.textContent).toBe(AUTO_IMPORT_HELP);
+    expect(
+      screen.getByRole("switch", { name: "Auto-import completed downloads" }),
+    ).toHaveAccessibleDescription(AUTO_IMPORT_HELP);
+    expect(screen.queryByText(/Set-aside downloads/)).not.toBeInTheDocument();
+  });
+});
+
+describe("SlskdPanel: slskd's Folder", () => {
+  test("the first row shows slskd's folder read-only, and where it is set", async () => {
+    server.use(
+      http.get(SETTINGS, () =>
+        HttpResponse.json(settings({ folder: "/media/downloads/slskd" })),
+      ),
+    );
+    renderWithProviders(<SlskdPanel />);
+
+    const term = await screen.findByRole("term");
+    expect(term).toHaveTextContent("Folder");
+    const [value, help] = screen.getAllByRole("definition");
+    expect(value).toHaveTextContent("/media/downloads/slskd");
+    expect(help).toHaveTextContent("Set with MUSICDROP_INBOX_DIR.");
+    // Read-only: not a field anyone can type in.
+    expect(screen.queryByRole("textbox", { name: "Folder" })).toBeNull();
+    // First on the card: before Base URL in document order.
+    expect(
+      term.compareDocumentPosition(screen.getByLabelText(/base url/i)) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // Path in slskd's placeholder names this row, on the same card.
+    expect(screen.getByLabelText("Path in slskd")).toHaveAttribute(
+      "placeholder",
+      `Same as ${term.textContent}`,
+    );
+  });
+
+  test.each<[string, boolean, boolean, boolean]>([
+    ["missing, auto-import on", false, true, true],
+    ["missing, auto-import off", false, false, false],
+    ["there, auto-import on", true, true, false],
+  ])("Missing badge: %s", async (_, exists, autoImport, shown) => {
+    server.use(
+      http.get(SETTINGS, () =>
+        HttpResponse.json(
+          settings({ folder_exists: exists, auto_import: autoImport }),
+        ),
+      ),
+    );
+    renderWithProviders(<SlskdPanel />);
+
+    // Control: the row has rendered, so an absent badge is not a load race.
+    await screen.findByText("/downloads");
+    const badge = screen.queryByText("Missing");
+    expect(badge !== null).toBe(shown);
+    // Beside the path it is about.
+    if (badge !== null) expect(badge.closest("dd")).toHaveTextContent("/downloads");
+  });
+
+  test("the badge follows the switch before a Save", async () => {
+    server.use(
+      http.get(SETTINGS, () =>
+        HttpResponse.json(settings({ folder_exists: false, auto_import: false })),
+      ),
+    );
+    renderWithProviders(<SlskdPanel />);
+
+    const autoImport = await screen.findByRole("switch", {
+      name: "Auto-import completed downloads",
+    });
+    expect(screen.queryByText("Missing")).toBeNull();
+    await userEvent.click(autoImport);
+    expect(screen.getByText("Missing")).toBeInTheDocument();
+  });
+});
+
+describe("SlskdPanel: what an import does with the files", () => {
+  const autoImport = () =>
+    screen.getByRole("switch", { name: "Auto-import completed downloads" });
+
+  test.each<[string, string]>([
+    ["move", "Files move into your library."],
+    ["hardlink", "Files stay, hardlinked into your library."],
+    ["copy", "Files stay, copied into your library."],
+    ["link", "Files stay, symlinked into your library."],
+    ["reflink", "Files stay, cloned into your library."],
+    ["reflink_auto", "Files stay, cloned into your library."],
+    ["in_place", "Files stay where they are."],
+  ])("%s: the line under auto-import, read with it", async (op, line) => {
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings())),
+      http.get(IMPORT_OP_URL, () => HttpResponse.json({ operation: op })),
+    );
+    renderWithProviders(<SlskdPanel />);
+    const change = await screen.findByRole("link", { name: "Change" });
+    expect(change).toHaveAttribute("href", "/settings/beets");
+    expect(change.closest("p")?.textContent).toBe(`${line} Change`);
+    // The switch is described by its help and the sentence, not the link's word.
+    expect(autoImport()).toHaveAccessibleDescription(
+      `${AUTO_IMPORT_HELP} ${line}`,
+    );
+  });
+
+  test("no line while the setting loads", async () => {
+    let reads = 0;
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings())),
+      http.get(IMPORT_OP_URL, () => {
+        reads += 1;
+        return new Promise<Response>(() => {});
+      }),
+    );
+    renderWithProviders(<SlskdPanel />);
+    await screen.findByLabelText("Path in slskd");
+    await waitFor(() => expect(reads).toBe(1));
+    expect(screen.queryByRole("link", { name: "Change" })).toBeNull();
+    expect(screen.queryByText(/^Files /)).toBeNull();
+    expect(autoImport()).toHaveAccessibleDescription(AUTO_IMPORT_HELP);
+  });
+
+  test("no line when the setting can't be read", async () => {
+    let reads = 0;
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings())),
+      http.get(IMPORT_OP_URL, () => {
+        reads += 1;
+        return HttpResponse.json({ detail: "boom" }, { status: 500 });
+      }),
+    );
+    renderWithProviders(<SlskdPanel />);
+    await screen.findByLabelText("Path in slskd");
+    await waitFor(() => expect(reads).toBeGreaterThan(0));
+    // Let the failed read settle before looking for the line.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole("link", { name: "Change" })).toBeNull();
+    expect(screen.queryByText(/^Files /)).toBeNull();
+    expect(autoImport()).toHaveAccessibleDescription(AUTO_IMPORT_HELP);
   });
 });

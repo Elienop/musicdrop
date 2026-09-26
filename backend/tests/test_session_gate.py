@@ -84,6 +84,13 @@ def test_unauthenticated_write_is_refused() -> None:
     assert resp.json() == _UNAUTHENTICATED
 
 
+def test_the_folder_browser_is_gated() -> None:
+    """``GET /api/folders`` lists any server folder, so it is never anonymous."""
+    resp = _anonymous().get("/api/folders", params={"path": "/"})
+    assert resp.status_code == 401
+    assert resp.json() == _UNAUTHENTICATED
+
+
 @pytest.mark.parametrize("path", sorted(DOC_SURFACE_PATHS))
 def test_the_doc_surface_is_gated(path: str) -> None:
     """``/openapi.json`` is the entire API contract; ``/docs`` executes it.

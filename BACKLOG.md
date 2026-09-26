@@ -100,8 +100,11 @@ entry carries a dated correction block where the pass changed it._
    (`beetsplug/fetchart.py:1536-1538`). beets' plugin index lists two third-party ones,
    `beets-copyartifacts` and `beets-filetote`; filetote also follows `beet move` (reference
    checkout `docs/plugins/index.rst:475-491`). Neither is evaluated.
-7. **Download providers** (owner ruling 2026-09-14, vault `decisions` #51; not started). Replaces
-   the saved "Download folders" idea; Add from folder's path is a free-text field today.
+7. **Download providers** (owner ruling 2026-09-14, vault `decisions` #51; ~~not started~~ —
+   **BUILT on `feat/sources-add-from-folder`**, branch 2, 2026-09-26, except what the bullets
+   below still owe). Replaces the saved "Download folders" idea; ~~Add from folder's path is a
+   free-text field today~~ — Add from folder offers your Folder sources and Recent folders
+   (S9), and **Browse folders** beside its path box (S7).
    - **Operation.** ONE GLOBAL SETTING, not a per-provider mode — owner ruling 2026-09-15
      (`decisions` #53): *"instead of branching this into each provider it will be a use it or not
      setting"*. Off writes `move: yes`, on writes `hardlink: yes`, into beets' own `import:` keys;
@@ -110,16 +113,26 @@ entry carries a dated correction block where the pass changed it._
      `DONT_OVERWRITE`). A link that cannot be made fails the import loudly — beets raises
      `Cannot hard link across devices.` (`util/__init__.py:587-589`) — and MusicDrop does not
      downgrade it to a copy: `decisions` #57 drops the fallback #51 described. While it is on,
-     no download folder empties itself, and the setting's own text must say so. NOT BUILT YET:
-     there is no switch route and no switch UI — `config_editor` models `hardlink` only for its
-     advisory — so today the user edits `import:` by hand in Settings -> Beets, which is the
-     same keys with a worse face.
-     slskd's auto-import keeps MOVING until branch 2 — the inbox routes and the drain send
-     `operation="move"`, overriding the global switch by design, and `config_editor`'s
-     link/hardlink/reflink advisory is where that is currently disclosed.
-   - **A provider holds** a name, a kind (slskd, or a plain folder), the folder MusicDrop reads,
-     the operation and, only when the source reports its own container paths (slskd today), that
-     reported root (today's `downloads_prefix`).
+     no download folder empties itself, and the setting's own text must say so. BUILT (branch 2,
+     S5): **Keep downloads** in Settings -> Beets, `POST /api/config/import-operation`, writes
+     those keys and runs Apply's reload in one request, under Apply's lock and job gate; a
+     cross-filesystem hardlink fails the job with one plain line, then beets' own.
+     slskd follows the config too since branch 2, S6 (`decisions` #77): the drain and both
+     inbox Review buttons send `operation="default"`, as a bank apply does, and every run that
+     lands every album of a folder inside slskd's folder records it in the ledger as
+     `imported`, so "Not imported yet" hides it until a file is added, removed or renamed in it.
+     `config_editor` lost its link/reflink advisory; hardlink's names only the history it forces.
+   - **A provider holds** a name and a folder, nothing else. BUILT (branch 2, S8) as
+     **Settings → Sources**: no per-source operation (`decisions` #53, #77) and no kind, because
+     slskd is not a source row (#77: slskd's message is the one way in); its card moved there
+     with its settings, file and routes unchanged, and shows its folder read-only. Folder
+     sources live in `<beets_dir>/sources.json` (`app/sources/store.py`), stored in the display
+     form the client sent and resolved on use; adding one refuses what an import start refuses,
+     with its sentences. Residuals: a non-UTF-8 folder that later gets a look-alike twin answers
+     409 at start (and reads as there on the list); no cap on how many, names may repeat, and a
+     folder may be added twice (cosmetic); a corrupt or unreadable file reads as empty and the
+     next add replaces it (logged on every read), while a remove answers 404 and writes nothing.
+     More in "What Settings → Sources leaves open" below.
    - **Beyond beets.** beets resolves the flags TWICE and the orders differ: `set_config` keeps
      one of move > link > hardlink > reflink, each clearing `copy` (`importer/session.py:114-138`),
      and the files stage then takes `copy` if it survived, telling `reflink: auto` apart from
@@ -169,8 +182,9 @@ entry carries a dated correction block where the pass changed it._
      `incremental` on, with `incremental_skip_later` so a skipped album is offered again; a
      sweep forces `incremental_skip_later` off (a user's `yes` made every sweep re-bank the
      same folders). The way past the history is beets' own `-I` — `ImportOptions.incremental:
-     false` (the wire admits `false` and `null`; `true` is a 422) — sent by **Import them again** and always by the
-     Bank's Review now. `copy`, `link` and `reflink` configs are left to the user (`decisions`
+     false` (the wire admits `false` and `null`; `true` is a 422) — sent by **Import them
+     again** and always by the Bank's Review now, slskd's drain and both inbox Review buttons
+     (branch 2, S2). `copy`, `link` and `reflink` configs are left to the user (`decisions`
      #53: the setting writes `hardlink`), though `link: yes` shares the same-file hazard below
      (measured: `util.samefile` follows the symlink).
      Recorded by the 2026-09-18 review seats:
@@ -350,12 +364,15 @@ entry carries a dated correction block where the pass changed it._
      real folder through the existing `resolve_display_path`, 409 when two folders display alike;
      a path with no placeholder reaches beets byte-for-byte as typed. Review-all with one settled
      folder vanished between listing and start was already harmless (pinned, no code).
-     NOT BUILT: a nonexistent path still starts and ends `done` with 0 albums ("a typo looks like
+     NOT BUILT: ~~a nonexistent path still starts and ends `done` with 0 albums ("a typo looks like
      success") — ~22 lines because any new refusal at `start` needs an arm in the acquisition
-     drain (which has no catch-all); importing a Trash ENTRY under `move` files the album and
+     drain (which has no catch-all)~~ (closed in #232: `missing_source_error` refuses it at
+     start); importing a Trash ENTRY under `move` files the album and
      leaves an empty entry listed, importing the Trash ROOT sweeps every trashed album into the
      library and orphans its origin records (noisy, nothing lost); a parent of the library — see
-     the `POST /import` footgun entry, now measured on a POPULATED library. The registry and
+     the `POST /import` footgun entry, now measured on a POPULATED library. (The Trash entry,
+     the Trash root and the parent of the library are all refused at start since 2026-09-25,
+     `feat/sources-add-from-folder`.) The registry and
      runner reach the library through one `cast` (`require_importable_library_root`) because
      `import_jobs/` must not import beets; an adapter-exported `Protocol` with `directory: bytes`
      type-checks against a real `Library` (seat, measured with mypy) and would retire the cast and
@@ -364,7 +381,10 @@ entry carries a dated correction block where the pass changed it._
      - **`aria-disabled:opacity-50` is copied onto ~20 buttons.** The pending recipe
        (`aria-disabled`, click swallowed) has no dim of its own, so each site adds the class,
        and a pending button keeps its hover fill. Lifting both into `buttonVariants` beside
-       `disabled:opacity-50` is a primitive-level decision.
+       `disabled:opacity-50` is a primitive-level decision. On the Keep downloads switch the dim
+       also fades its focus ring, to 1.82:1 against the page (below 3:1; `frontend/src/styles.css`
+       already records the ring failing at 50% on every ground). The fix there is to dim the
+       thumb and track, not the element (UI seat 2026-09-26, not built).
    - **Replace disposes of the old copy before beets places the new one — BUILT 2026-09-18 on
      `feat/import-keep-downloads`** (`decisions` #58, corrected the same day). The duplicate
      hook moves every duplicate that has files to Trash, drops the rows of one that has none,
@@ -581,8 +601,9 @@ entry carries a dated correction block where the pass changed it._
      delete, Apply, swap lock, claim lock, TOCTOU.
    - **Upgrade note owed in the release.** A user running `copy: yes, delete: yes` today has
      manual imports of a plain folder silently removing the source; after the pin they keep it, so
-     that folder stops self-emptying. Inbox/slskd paths are unaffected (they send
-     `operation="move"`). Name `move` as the supported alternative. Also name the new boot
+     that folder stops self-emptying. Since branch 2, S6, slskd's imports follow the same config,
+     so its downloads stay too; so do an old starter's (`copy: yes` + `move: no`), which used to
+     move. Name `move` (Keep downloads off) as the supported alternative. Also name the new boot
      refusals (owner ruling 2026-09-21): a config that started on the previous release stops at
      boot if an `include:` is missing or broken, or if the include list is over 32 entries or
      1 MiB. Before, beets loaded it without the include and said so only on stderr.
@@ -597,8 +618,12 @@ entry carries a dated correction block where the pass changed it._
      settle-timer folder watcher): on a completed job, one bounded scan of the yubal folder for
      album folders changed since the job started, imported by hardlink. Upstream, copying
      `destination` onto the Job would remove the scan.
-   - Not yet: a browse picker (a folder-listing route is a new ability to read the filesystem).
-8. **Docs: `docker-compose.yml` and README show split `/music` + `/inbox` mounts** (2026-09-14).
+   - ~~Not yet: a browse picker (a folder-listing route is a new ability to read the
+     filesystem).~~ — **BUILT (branch 2, S7)**: `GET /api/folders` behind **Browse folders**; what
+     it leaves open is under "What the folder browser leaves open".
+8. ~~**Docs: `docker-compose.yml` and README show split `/music` + `/inbox` mounts**~~
+   (2026-09-14) — **CLOSED on `feat/sources-add-from-folder`** (branch 2, S5, 2026-09-26): both
+   show ONE `/media` mount, and README's "One mount for music and downloads" says why.
    rename(2) and link(2) return EXDEV across two mount points even of the same filesystem
    (`man 2 rename`, `man 2 link`), so two bind mounts make an import move a copy-then-delete (beets'
    `util.move`, and MusicDrop's own moves) and a hardlink fail, even on one dataset. One parent
@@ -1149,8 +1174,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   in `docs/superpowers/reports/2026-09-25-config-validate/research-typed-reads.md` §3: `paths:
   5` or `max_filename_length: x` fails an import after its rows are added; `clutter: 5` in move
   mode fails it after the files moved; `sort_album: 5` fails every album list.
-- **The Naming save cannot edit a file beets accepts and ruamel refuses** (recorded 2026-09-25,
-  not built). It still edits `paths:`/`replace:` in place with ruamel, so a duplicate key, a
+- **The Naming save and the Keep downloads switch cannot edit a file beets accepts and ruamel
+  refuses** (recorded 2026-09-25, not built; the switch added 2026-09-26). Both edit in place
+  with ruamel (the switch only `import:`'s file-operation keys), and both rewrite every
+  `yes`/`no` in the file to `true`/`false`, untouched keys included (measured: `fetchart.auto:
+  no` came back `false` after a flip). The Naming save still edits `paths:`/`replace:` in
+  place with ruamel, so a duplicate key, a
   plain value starting with `%` (`default: %the{$albumartist}/…`, beets' own docs), or
   `!!omap {…}` answers 422 "config.yaml does not parse" there, while Validate, Save, the Naming
   GET, Apply and boot all accept the file. A negative leading-zero int (`file: -0644`) is
@@ -1158,6 +1187,11 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   422 ("invalid literal for int() with base 8: '0-644'"); nothing is written. That refusal
   ends "Check it in Settings → Beets.", and that page validates the file clean. Edit such a
   file in Settings → Beets.
+- **Two server sentences shared by Apply, the Naming save and the switch misfire on the switch**
+  (review seats 2026-09-26, not built). A switch refusal ends "Check it in Settings → Beets."
+  (`_on_disk_row`, `app/beets/config_editor.py`), said on that same page. After a flip has
+  written config.yaml, a failed reload answers Apply's recovery lines, which end "…, so nothing
+  was changed." (`_unreadable_recovery`, `_restored_refusal`), when the file did change.
 - **An album edit or rename answers a bare 500 for a hand-edited bad `import.*` switch**
   (recorded 2026-09-25, not built). `should_move`/`should_write` read `import.move`/`copy`/
   `write` with `.get(bool)` outside any `try` in both previews and applies
@@ -1621,8 +1655,20 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   no behavioural risk, so the ratio is good.
 
 - **`POST /import` gives a signed-in owner two footguns with no confirmation and no way
-  out (2026-08-30).** Distinct from the containment ruling recorded under *Accepted
-  residuals* — that ruling is about an **attacker's** marginal capability and it stands.
+  out (2026-08-30).** ~~(1) `/` and a parent of the library are accepted.~~ — **(1) CLOSED
+  2026-09-25** on `feat/sources-add-from-folder` (this branch; design S1, decisions #76/#77).
+  Every start now refuses a source that is or holds the library; is, holds or sits in one
+  of MusicDrop's own folders; or is or holds slskd's whole folder, with one of four fixed
+  422 sentences (`store_layout.import_source_refusal`, asked in `BeetsImportRunner.validate`
+  after the existence check; walks up, never down). It asks both where a source resolves
+  and the folder beets walks (beets' `normpath` collapses `..` lexically), and compares each
+  protected folder as resolved and as it arrives. Only a folder that arrives as typed gets both
+  spellings: `directory:`, an absolute `library:`, the caches, the exports and a store set in
+  the environment. The beets dir, a configured Trash or origin store and the stores defaulted
+  under the beets dir arrive resolved. What it does not see is the next entry. A wide folder
+  that holds none of them (`/mnt/bigdisk`) still starts, so (2) below stays open. Distinct from
+  the containment ruling recorded under *Accepted residuals* — that ruling is about an
+  **attacker's** marginal capability and it stands.
   This is about the **owner's** own typo, which it never covered. (1) `{"path": "/"}` is
   accepted and starts a beets autotag walk of the whole container filesystem. The only
   path validation on the way in is `BeetsImportRunner.validate`
@@ -1668,6 +1714,296 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   candidate count. Explicitly **not** an allowlist: that is the exact remedy the
   2026-07-07 ruling rejected as workflow friction, and the reasoning it gave for ad-hoc
   `/downloads` imports has not changed.
+
+- **The import-start refusal does not see an alias BELOW the source (2026-09-25,
+  `feat/sources-add-from-folder`, design S1 residuals 1-2).** Search words: bind mount,
+  symlink inside a source, import refusal, holds the library. `import_source_refusal` walks UP
+  from the source and from each protected folder, never down, and some protected folders reach
+  it already resolved, so these shapes pass it:
+  - **A bind-mount alias of the library (or one of ours) inside the source's tree.** Measured by
+    the S1 security seat (L-1) with two real bind mounts under `unshare -rm`: `directory:
+    <root>/music` a bind of `host/media/musicdrop`, and `<root>/media` a bind of `host/media`.
+    The source `<root>/media` is ALLOWED, and beets yields `<root>/media/musicdrop/Artist/Album`,
+    the library's own album. "Is" and "inside" do catch the alias, by identity; only "holds"
+    misses it. Still allowed after fix round 1's two spelling fixes.
+  - **A symlink inside a source that points at the library or an app folder.** beets follows
+    directory links while it walks (`sorted_walk`'s `os.path.isdir`,
+    `beets/util/__init__.py:250`).
+  - **A symlinked `MUSICDROP_BEETS_DIR`, `MUSICDROP_TRASH_DIR` or `MUSICDROP_TRASH_ORIGINS_DIR`,
+    and the source its spelled parent.** These arrive resolved (`app/beets/setup.py:230`,
+    `app/beets/trash.py:1033` and its origin twin), and so does every store defaulted under the
+    beets dir, so the refusal never sees the spelling. Measured by both S1 fix-round-1 seats
+    through the production wiring: with `<root>/config/beets -> <root>/pool/appdata/beets` and
+    the caches moved away, the source `<root>/config` is ALLOWED, and beets yields
+    `<root>/config/beets/inbox/HalfArrived` and `<root>/config/beets/trash/Artist/Trashed`; a
+    Trash at `<root>/stuff/trash -> <root>/pool/trash` lets `<root>/stuff` through the same
+    way. `<root>/pool/appdata` and `<root>/config/beets` are refused. On the shipped image
+    `/data` is refused anyway, by the `/data/cache` rows, which arrive spelled. Harm: the Trash
+    is imported (noisy, nothing lost), and a slskd writing into the default `<B>/inbox` gets
+    its half-arrived albums imported (the #77 concern). Future fix, **a corrected line in code,
+    can wait, not built**: about 4 lines adding `_spelled_chain` rows for `settings.beets_dir`
+    and, when set, `settings.trash_dir` and `settings.trash_origins_dir`; one spelled beets-dir
+    row covers every store defaulted under it. Engine check: beets has no Trash or store dirs;
+    these are MusicDrop's own resolvers. The `import_task_created` guard below would close it
+    too.
+  Why it can wait: all three need the operator's own mount or link, and the owner's layout keeps
+  `/data` apart with one `/media` bind mount (server facts 2026-09-15). Future fix, **a new
+  mechanism, not built**: on beets' `import_task_created` (`beets/importer/tasks.py:544-557`; a
+  handler returning `[]` drops the task), drop an album folder that the existing
+  `is_in_library_source` (`app/fsutil.py:372`) or `protected_trees().ids`
+  (`app/beets/protected.py:129`) identify as the library's or ours. It walks up from folders
+  beets already found, so it adds no walk down, and it would also close the window between the
+  start-time check and the walk (security seat I-1).
+
+- **Review all is refused wholesale when slskd's folder holds the library or the beets dir
+  (2026-09-25, S1 code seat).** `settled_folders` lists `music`/`beets` as items of an inbox
+  set to their parent, so every Review all answers "That folder … Pick another." although
+  nothing was picked (probed: `[album, beets]` refused, `[album]` starts). Per-row Review still
+  works, and refusing is the safe side. Fix, **a new mechanism**: leave refused entries out of
+  the listing; S3's shared "not imported yet" rule is the natural home.
+
+- **A bank row refused for WHERE its folder is says "decide again", which cannot succeed
+  (2026-09-25, S1 seats).** The apply runner records `error_recovery="fix_folder"`, the
+  least-wrong of the three values, and the banner reads "Fix the folder or its share, then
+  decide again." (`frontend/src/pages/review/BankReviewPage.tsx:233`). The row's folder cannot
+  change, so every re-decide fails with the same sentence; Rescan also resets the row to
+  `needs_review` although nothing was disproved: a `fix_folder` row resets because a rescan
+  proves a folder that would not answer now does, and this row failed for where its folder is,
+  not because it would not answer (`bank/store.py`, the rescan docstring). Harmless: one operator, the same sentence each time. The real remedy is removing
+  the row. A fourth recovery value with a true headline is **a new mechanism**, recorded here,
+  not built.
+
+- **A per-row Review can import a folder "Waiting for review" holds (2026-09-25, S3 seats).**
+  `POST /acquisition/inbox/items/import` (`_start_inbox_item`, `app/api/acquisition.py`) never
+  asks `bank_held_names`, so a list row that went stale before its album was banked still
+  starts an import of that folder; the next poll hides the row. The album is then decided in two
+  places. **A new mechanism**, not built: refuse a held name at start.
+- **`inbox_pending` has no reader, and every status poll pays for it (2026-09-25, S3 code
+  seat).** Nothing in the frontend reads it (the nav Review badge reads `needs_review_count`),
+  yet `GET /acquisition/status` makes a bank read and an inbox scan for it on every poll. Drop
+  the field (a contract change) or give it a reader; not built.
+- **`inbox_bank_dir` is opt-in, so a new inbox-route test can open the dev bank (2026-09-25,
+  S3 code seat).** Without the fixture (`backend/tests/conftest.py`), `get_bank_dir()` is the
+  cwd-relative default and a test opens `backend/data/beets/bank/bank.db`. A suite-level floor
+  like the root conftest's `SUITE_DATA_DIR` (set `MUSICDROP_BANK_DIR` before `app.config` is
+  imported) would close it for every test; **a new mechanism**, not built.
+- **A broken bank blanks the drain's live status (2026-09-25, S3 code seat).** The status
+  route now reads the bank, so an unreadable bank answers 500, and `useAcquisitionStatus`
+  (`frontend/src/api/useAcquisitionStatus.ts`, the `!response.ok` arm) turns that into IDLE:
+  a running drain shows as idle. The Review page already shows the bank's own error. Not built.
+- **No toast after a single Ignore (2026-09-25, S3 UI seat).** The bulk Ignore says what
+  happened; a per-row Ignore just removes the row. Not built.
+- **The activity panel hides an attended Review all run (2026-09-25, S3 UI seat).**
+  `importRow` (`frontend/src/api/useActivity.ts`) drops every `origin="inbox"` import because
+  the acquisition row stands for the drain, but Review all and per-row Review also start
+  `origin="inbox"` runs while the drain is idle, so nothing shows them. Not built.
+- **A decision can land on a list the operator never saw (2026-09-26, S2 security seat).** A
+  decision is tied to the row id only. If the drain re-banks the folder while the review dialog
+  is open (a late track), the operator's `candidate_index` resolves against the NEW candidate
+  list: they pick the second release shown, the apply pins the second of another list. The
+  row's `fingerprint` is a ready-made version token to send with the decision; beets has no
+  equivalent (its prompt keeps the task in memory). **A new mechanism**, not built.
+- **Under `group_albums: yes` a skip can lack its own row (2026-09-26, S2 seats).** beets'
+  default is `no`. Grouping builds tasks by tag, not by folder
+  (`beets/importer/stages.py:178-182`; `task.is_grouped` is beets' own marker), so a one-track
+  group's "folder" is the file (its apply job fails), and two groups in one folder share one
+  bank row. Not built.
+- **A hand-made unattended import outside slskd's folder banks `source="inbox"` rows
+  (2026-09-26, S2 seats).** `POST /api/import {unattended: true}` on any folder banks what it
+  skips as `inbox`, and those rows' Remove sentence then says the folder goes back to Not
+  imported yet, which is slskd's list. API-only; the UI never sends it. Not built.
+- **An apply answers every album under its folder with one decision (2026-09-26, S2 seats).**
+  `_directive_choice` (`app/beets/import_session.py`) answers each album the run finds with the
+  row's one banked decision. slskd writes one level, so its downloads cannot hold a nested
+  album; a sweep or Add from folder on a folder holding one can. Not built.
+- **What slskd's retry and Path in slskd leave open (2026-09-26, branch-2 S4 design residuals).**
+  - A MusicDrop restart longer than slskd's retry schedule (about 2.5 minutes with
+    `attempts: 10`) still misses the webhook; the folder waits in "Not imported yet".
+  - A retry that lands after a move import finished runs an import that finds no audio and
+    counts one more imported in "Recently landed" (the move changed the folder's mtime, so
+    the ledger no longer matches).
+  - A wrong webhook secret now costs ten 401s per download, since slskd retries every
+    failure; slskd's log says why.
+  - The stored key and env var keep the old name `downloads_prefix` /
+    `MUSICDROP_SLSKD_DOWNLOADS_PREFIX`, though the field now reads "Path in slskd".
+  - The slskd card's miss line covers a message that did not map; a queued folder whose
+    import later failed still shows only in "Not imported yet" ("Import failed").
+  - `coalesce_album_root` may never fire for slskd's one-level layout; measure it against a
+    real slskd, and a negative result is a delete signal.
+  - The miss line stays up after Path in slskd is fixed and saved, until the next download
+    maps; beside a green "slskd settings saved." it reads as the fix having failed. Clearing
+    it on a save that changes the field is the owner's call (the S4 addendum says "cleared by
+    the next message that matches").
+  - The line says a download missed but not which folder slskd sent. Sending that folder
+    instead of a bool would tell the user what to type; the field is unreleased, so this is
+    cheapest now.
+  - A Path in slskd that is a PARENT of slskd's folder (`/`, or `/app` when slskd uses
+    `/app/downloads`) maps to a folder that does not exist: it is queued with no miss line, and
+    the drain later fails it as "is no longer there". An existence check would false-alarm on
+    the retry-after-move residual above, so it needs design.
+  - A peer-named `.` or `..` leaf is refused but lights the miss line (a harmless
+    misattribution).
+  - ~~`localDirectoryName` has no length cap, and `remap_to_inbox` is quadratic in the part
+    count and runs on the event loop~~ — **CLOSED 2026-09-26** (branch-2 final review): capped at
+    4096 characters with Pydantic's `StringConstraints`, as `StartImportRequest.path` is; over
+    it answers 422, after the secret's 401. The S4 note's "~1.8 s at 62 KB" was one sample,
+    not a cap: the request body allows far more, and a 128 KB name held the loop ~7 s (an
+    unrelated `/api/health` waited 6.9 s). 9.6 ms at the cap (measured 2026-09-26).
+
+- **What remembering imported slskd folders leaves open (2026-09-26, branch-2 S6 design
+  residuals 32-40, 44).** Search words: ledger, imported, remember and hide, Not imported yet,
+  kept download, recorder. A run records a folder only when it ends `done`, was not cut short,
+  and every album it fed from that folder landed (`ImportJobRegistry._fully_landed_sources`,
+  `app/acquisition/inbox.py::record_imported`).
+  - Deleting an album from the library leaves its slskd folder hidden (the owner's accepted
+    trade-off, `decisions` #77). Add from folder still reaches it; only a change in the folder
+    un-hides it.
+  - The record sees only the folder's own entries: a change inside a subfolder, or a file
+    rewritten in place under the same name, does not bring it back. slskd writes one level and
+    never overwrites, so its own downloads cannot do this; a nested album copied in by hand can.
+  - A record deeper than the list entry never hides the entry: Add from folder on `X/CD1`, or a
+    drain folder that `coalesce_album_root` walked up. The entry stays listed.
+  - A stopped or failed run records nothing, even for folders it finished; they stay listed, and
+    reviewing one again asks the duplicate question for the album already imported (copy,
+    hardlink, symlink, reflink).
+  - Sweep & bank records nothing (a sweep keeps no per-album feed), so a slskd folder a sweep
+    imported stays listed.
+  - A drain run that loses its result to a raced handoff writes `failed`
+    (`AcquisitionQueue._raced_handoff`) over the recorder's `imported`: the folder shows "Import
+    failed" though it imported. Rare: another import must claim the slot inside the drain's 0.5 s
+    poll.
+  - Under in place, every slskd album's page shows the "outside your library folder" notice
+    (`frontend/src/pages/albums/AlbumDetailPage.tsx`) with its "If an import stopped part-way"
+    hint, which does not apply, and MusicDrop's Move to Trash then moves the download itself.
+  - No MusicDrop "Move to Trash" for download folders (`decisions` #77): deleting a download for
+    good is slskd's System → Files, which needs slskd's `remote_file_management: true` (default
+    `false`). Not built.
+  - An ignored row stays `Ignored` in the bank after its folder is imported from "Not imported
+    yet".
+  - A history-skipped album (a hardlink run from Add from folder, history on) emits no feed row,
+    so a folder whose other albums landed is recorded; the skipped one was already imported.
+  - Upgrade: an install on the old starter's `copy: yes` + `move: no` copies slskd downloads from
+    S6 on, and its disk use grows; Keep downloads on, then off, moves (on `copy: yes` the switch
+    already reads off). README carries it; the release note must too.
+  - A file that lands in a folder DURING its import is hidden with it: the identity is taken when
+    the run finishes (`AcquisitionLedger.mark`). Under move with Review (the owner's setup) that
+    leftover was listed before S6. In the drain, the late file's webhook is dropped by the
+    in-flight dedupe (`AcquisitionQueue.enqueue`) and both writers record the new identity, so
+    nothing surfaces it. Identity at start breaks in place, where fetchart writes `cover.jpg`
+    into the source folder (`beets/library/models.py` ~550-606); the exact rule ("no audio name
+    that was not there at start") needs new state. Owner's call.
+  - A folder whose name is not valid UTF-8 is never remembered (the ledger's JSON cannot hold
+    it); it stays listed.
+  - The slskd card's Change link, like its Review link, drops an unsaved auto-import flip.
+    react-router's `useBlocker` is the engine answer (the app uses a data router). Not built.
+
+- **What the folder browser leaves open (2026-09-26, branch-2 S7 design residuals 3, 4, 26, 27).**
+  Search words: folder browser, Browse folders, `GET /api/folders`, badge, listing, hung mount.
+  - Badges compare by path only (`store_layout.folder_badge`, no `stat` per entry): an entry that
+    reaches the library or one of MusicDrop's folders only through a symlink or a bind mount shows
+    no badge. The refusal line, which does stat, still speaks once that folder is opened, and the
+    start still refuses it.
+  - A hung mount hangs the browser: a listing has no deadline, so the dialog shows `Loading…`
+    until the mount answers. The cap (2, `app/api/folders.py`) keeps it from taking more of
+    anyio's pool than that; listings behind it wait.
+  - Browsing into Trash gives no pointer to Restore; the refusal line says only that the folder
+    holds MusicDrop's own data.
+  - Up to 500 rows are tab stops before `Use this folder`; a one-stop list with arrow keys is a
+    new key handler.
+  - Test-only: confuse's first read of a freshly CLEARED `beets.config` is not thread-safe, and
+    only the suite clears it (`reset_beets_globals()`); three listings on a just-reset config saw
+    `ignore not found` (a 500). Production never meets it: Apply passes `keep_config=True` and
+    swaps the config in one assignment (`_install_config`); 0 errors across 2,488 listing reads
+    during 100 real Applies (security seat, 2026-09-26). The one production residual: the walk
+    rules are two reads (`import_walk.walk_rules`), so a listing during an Apply could in theory
+    pair the old `ignore` with the new `ignore_hidden`. Not observed.
+  - A path's edge whitespace is stripped (`folders._start_folder`, as the start strips,
+    `models/import_api.py` `strip_whitespace`, and as the page strips), so a folder named
+    `Album ` (trailing space; slskd keeps those on Linux) opens its sibling `Album`, and with no
+    such sibling it, or one ending in a no-break space, lists its parent. A wrong folder, never a
+    refused one. Settings → Sources strips the same way (`models/sources.py` ~42,
+    `FolderSourcesPanel.tsx` ~166), so a folder `Album ` is saved as `Album`. The fix changes how
+    the start and the page strip too. Not built.
+  - After Apply loads a refused store layout, the registry has no Trash folders attached
+    (`registry.source_rows()` is `None`), so the browser shows no badges and no refusal line; the
+    start still fails closed with 503 and Apply's sentence.
+  - Over the 500 cap, the dialog's narrowing searches only the first 500 (the dialog says so). A
+    server-side filter would be the fix; beets has no listing API to lean on. Not built.
+
+- **What Settings → Sources leaves open (2026-09-26, branch-2 S8 review).**
+  Search words: Folder source, `sources.json`, `/api/sources`, saved folder, Sources page.
+  - A saved source can be, or later become, one the start refuses: an env or `directory:` change,
+    or a link retargeted after the add. The list never re-checks (it asks only whether the folder
+    is there), the start still refuses it, and S9's button would fill a path the start refuses.
+    beets has no source concept; the app's `folder_badge` (`store_layout.py` ~516) marks by
+    spelling only, with no `stat`. Not built.
+  - A non-regular file at `<beets_dir>/sources.json` (a FIFO) blocks every read of it until a
+    writer opens it or the app restarts; a directory there, or an unwritable beets dir, gives a
+    plain 500 on add. confuse skips a non-regular user config (`confuse/sources.py` ~94-95) and
+    the app checks `config.yaml` and `password-hash` the same way (`config_snapshot.py`
+    ~134-136, `auth/source.py` ~164-171); the slskd store (`app/slskd/config.py` ~75-83) has the
+    same unchecked read. Not built for either.
+  - The Sources list, add and remove share the folder browser's 2 slots (`folders.folder_read`),
+    and list and add `stat` SAVED folders: one hung saved folder can stall Browse, and after S9
+    Add from folder's list. The cap keeps the rest of anyio's threads for the app.
+  - A successful add is not announced to a screen reader; the app's pattern is an always-mounted
+    `role="status"` (`SlskdPanel.tsx` ~385-400). Not built.
+  - Removing a second row while the first is pending drops the first row's `aria-disabled`, and
+    the first one's failure is not told (one `useMutation`; TanStack's `useMutationState` would
+    see both). Not built.
+  - Rows with the same name get identical remove-button names (names may repeat, above). Not
+    built.
+
+- **What Add from folder leaves open (2026-09-26, branch-2 S9 review).**
+  Search words: Add from folder, Recent folders, `useRecentFolders`, Review now, refusal, scroll.
+  - With 10 Recent rows, a refusal after Enter in the path box lands below the fold (y≈1486 on a
+    360×800 phone, y≈918 at 1280×800), and a 409/503 does not redden the box. Browsers scroll
+    only to focus; the app has no scroll helper (its one `scrollIntoView` is CodeMirror's,
+    `SettingsBeetsPage.tsx` ~141). Owner's call. Not built.
+  - A path whose 202 arrives after the page is left never joins Recent: `mutate()`'s own
+    `onSuccess` needs a mounted observer (`@tanstack/query-core` `mutationObserver.js` ~76); the
+    `useMutation`-level one always runs (`mutation.js` ~107), but `useStartImport` is shared. Not
+    built.
+  - A planted Recent row can show `Invalid Date`, or fill the box past 4096 characters (a value
+    set by code bypasses `maxLength`). Only a foreign writer (devtools, another script) can plant
+    one. Not built.
+  - `break-all` on older path sites (`PlexSettingsPanel.tsx` ~348, `SettingsTrashPage.tsx` ~83,
+    `SettingsBeetsPage.tsx` ~599/~876, `RouteErrorBoundary.tsx` ~71) splits words mid-name:
+    switch them as one sweep to `wrap-anywhere`, as S9's three sites now are. Not built.
+
+- **What the branch-2 final review leaves open (2026-09-26).** New mechanisms, not built.
+  Search words: final review, Sources sentence, bank Remove, ledger FIFO, Recently landed.
+  - Settings → Sources shows S1's slskd sentence, "That’s slskd’s whole folder. Pick an album
+    inside it." (`store_layout.py` ~290, via `sources.py` ~85-87), whose remedy fits Add from
+    folder, not a Sources pin. A Sources-only sentence needs the refusal's kind. Owner's call.
+  - The bank's Remove sentence keys on `row.source === "inbox"` (`BankSection.tsx` ~128-149),
+    while the server holds a folder back by where it is (`bank/store.py` ~486): a Sweep & bank
+    row inside slskd's folder goes back to "Not imported yet", but the dialog says a re-sweep
+    will not pick it up.
+  - `.musicdrop-ledger.json` in slskd's folder is read by name at boot with no regular-file
+    check (`app/main.py` ~339 → `app/acquisition/ledger.py` ~41): a FIFO there hangs boot. Same
+    engine answer as the `sources.json` / `slskd.json` FIFO bullet under "What Settings →
+    Sources leaves open" (confuse skips a non-regular file).
+  - "Recently landed" counts only the drain's imports; after a per-row Review it reads
+    "0 imported" (`ReviewPage.tsx` ~257, ~694).
+  - At 360 px a bank row's title is cut to "Boards…" beside the "Uncertain match" badge
+    (`BankSection.tsx` ~69, ~547-556). Older than this branch, but S2 brings slskd rows into it.
+  - Under a refused layout a bank apply waits silently: each 1 s pass claims the row, walks the
+    folder, then puts it back to `queued` with no reason (`bank/apply_runner.py` ~471-478). The
+    drain now names the refusal (`acquisition/queue.py` ~199-201) — the precedent. Not in the
+    shared gate: the drain sets `_current` before `_wait_for_gate` (`queue.py` ~167-170), so a
+    gate refusal would show "Importing <folder>" with no sentence.
+  - Installs since v0.15.0 (PR #85) keep the starter's old five-rule `replace:` block, which
+    REPLACES beets' own rules (beets reads one source, `library/library.py` ~64), `'[\\/]'`
+    included: an untagged or artist-less album renders an absolute subpath and files OUTSIDE
+    the library (`//00 .flac`; album "tmp" → `/tmp/01 ….flac`). New installs are fixed (the
+    starter lists beets' rules, 2026-09-26). For existing configs: a migration, an advisory, or
+    extending "Add recommended rules", which today APPENDS after beets' rules, so "Wait…" ends
+    "Wait..." and escapes `\.$` beside the ASCII "Wait.._" folder (`NamingPanel.tsx` ~690-702).
+    **Owner chose (2026-09-26, decisions #79): the Naming page warns when beets' path rules are
+    missing, and "Add recommended rules" restores them in beets' order after the typographic
+    rules — a follow-up branch; nothing edits a config without a Save.** Search words: replace,
+    path separator, absolute destination, untagged.
 
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth
@@ -2701,20 +3037,19 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   one `lstat` in `_audio_free_entries`' predicate, listing any non-hidden top-level entry not
   already grouped as a zero-track row, covers both (code read).
 
-- **The slskd webhook's remap strips its prefix as text, so a Downloads path outside it imports
-  nothing and reports no failure** (2026-09-14, providers research). `slskd.service.remap_to_inbox`
-  uses `str.removeprefix`. Measured 2026-09-14 with prefix `/app/downloads`: `/app/downloads2/X` →
-  `<inbox>/2/X`, and `/elsewhere/X` (not under the prefix) → `<inbox>/elsewhere/X`;
-  `acquisition.inbox.contain(..., strict=True)` accepted both, and accepts a folder that does not
-  exist (`Path.resolve()` is non-strict). The webhook then answers `queued`:
-  `coalesce_album_root` returns a non-disc folder unchanged, `enqueue` passes (the ledger's `seen`
-  is False for a folder it cannot stat), and the drain move-imports the missing path. Measured
-  here with a real `BeetsImportRunner` (move, unattended) on a missing inbox folder: `on_finish`,
-  no error. So the job ends `done` with nothing set aside, and the queue records `imported` and
-  marks the ledger with an empty identity (code read). If a folder does exist at the remapped
-  path, that one is imported instead. Why now: after a mount change, a Downloads path that no
-  longer matches fails silently. Fix shape: match whole path segments, and refuse a path outside
-  the prefix with one log line naming both paths.
+- ~~**The slskd webhook's remap strips its prefix as text, so a Downloads path outside it imports
+  nothing and reports no failure**~~ — **CLOSED 2026-09-26** on `feat/sources-add-from-folder`
+  (branch 2, S4; found 2026-09-14). `str.removeprefix` re-rooted `/app/downloads2/X` to
+  `<inbox>/2/X`. `remap_to_inbox` now matches Path in slskd (still stored as `downloads_prefix`)
+  by whole folder names with `PurePosixPath.relative_to` and uses the reported folder as it is
+  when the field is empty; a miss answers `200 ignored` with one `%r` line naming both paths,
+  and `GET /api/slskd/settings` carries `last_download_missed` for the panel's line. Pinned by
+  `test_remap_to_inbox_maps_by_whole_folder_names` and
+  `test_remap_to_inbox_refuses_a_folder_outside_path_in_slskd` (`tests/test_slskd_service.py`),
+  and `test_a_folder_that_does_not_map_is_refused_not_rerooted`,
+  `test_an_empty_path_in_slskd_refuses_a_folder_elsewhere_not_rerooted` and
+  `test_a_miss_logs_one_line_naming_both_paths` (`tests/test_slskd_webhook.py`). Search words:
+  remap, removeprefix, downloads_prefix, Path in slskd.
 
 - **A duplicate resolve that faults part-way drops the earlier albums' rows and keeps the
   rest.** (Found 2026-09-12 on `fix/descriptor-anchored-library-writes`; security seat L-2,
@@ -3680,8 +4015,8 @@ the condition it names has changed.
     the browser is never shown which folders it handed over, and a count-dependent ternary would
     put two spellings of one refusal in the code to fix a sentence that is not wrong, only loose.
   * **It is a guard, not the cure.** The typo that prompted it came from a free-text path field.
-    The folder browser in *Next up* removes the typo at its source; this refusal is what stands in
-    until then.
+    The folder browser (branch 2, S7) removes the typo at its source; this refusal still stands
+    behind a typed path.
 
 - **"Stop this run" — what it deliberately does not do** (2026-09-19, `feat/import-keep-downloads`,
   replacing the run page's "Start over"). Stop is beets' own `ImportAbortError` raised at the next

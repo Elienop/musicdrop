@@ -41,6 +41,10 @@ BankStatus = Literal["needs_review", "queued", "applying", "done", "failed", "ig
 # * ``fix_folder``       - the banked folder is still there but does not
 #   answer (a permission bit, an unsearchable parent, a symlink loop).
 #   Deciding again is the recovery, but only after the operator fixes it.
+#   Also written when the start refuses the folder for WHERE it is (the
+#   library, one of ours, slskd's whole folder): the least-wrong value, since
+#   the folder cannot change and deciding again fails the same way. The real
+#   remedy there is removing the row (BACKLOG, a fourth value not built).
 #
 # Exactly the three the apply runner writes - no fourth value, and no second
 # flag whose combinations nothing would ever produce.

@@ -356,6 +356,7 @@ def make_test_handle(lib: "Library", beets_dir: Path) -> LibraryHandle:
       file backs it, so any ``.stat()`` / ``.read_text()`` against it raises.
     * ``loaded_at`` is the Unix epoch.
     * ``file_mtime_at_load`` is ``0.0``.
+    * ``file_operation`` is ``in_place``, which beets' defaults never load.
     """
     return LibraryHandle(
         lib=lib,
@@ -363,6 +364,7 @@ def make_test_handle(lib: "Library", beets_dir: Path) -> LibraryHandle:
         config_path=Path("__placeholder__"),
         loaded_at=datetime(1970, 1, 1, tzinfo=UTC),
         file_mtime_at_load=0.0,
+        file_operation="in_place",
     )
 
 
@@ -514,6 +516,19 @@ def close_bank_connections() -> Iterator[None]:
     close_connections()
     yield
     close_connections()
+
+
+@pytest.fixture
+def inbox_bank_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the bank the inbox routes ask at this test's own tmp dir.
+
+    The three inbox routes read the bank through ``get_bank_dir()``, and the
+    suite's ``beets_dir`` is the cwd-relative default: without this a test
+    opens ``backend/data/beets/bank/bank.db``, the dev checkout's own bank.
+    """
+    bank_dir = tmp_path / "bank"
+    monkeypatch.setattr(settings, "bank_dir", str(bank_dir))
+    return bank_dir
 
 
 @pytest.fixture(autouse=True)

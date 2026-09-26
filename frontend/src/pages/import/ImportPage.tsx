@@ -3,11 +3,16 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
 import { useActiveImport } from "@/api/useActiveImport";
+import {
+  IMPORT_OPERATION_LINE,
+  useImportOperation,
+} from "@/api/useImportOperation";
 import { invalidateLibraryContent } from "@/api/useEventStream";
 import type {
   ImportAlbumSummary,
   ImportJobState,
   ImportProgress,
+  StartImportRequest,
   SweepStatus,
 } from "@/api/useImport";
 import {
@@ -23,6 +28,11 @@ import {
   useStopImport,
 } from "@/api/useImport";
 import type { AlbumOrigin } from "@/components/albums/album-grid";
+import { FolderBrowserDialog } from "@/components/folders/FolderBrowserDialog";
+import {
+  RecentFolderList,
+  SourcePins,
+} from "@/components/import/FolderShortcuts";
 import {
   AddFromFolder,
   Albums,
@@ -45,9 +55,9 @@ import { StatusBanner } from "@/components/system/StatusBanner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SEGMENT_SEP } from "@/lib/format";
+import { useRecentFolders } from "@/lib/useRecentFolders";
 import { useThrottledValue } from "@/lib/useThrottledValue";
 import { cn } from "@/lib/utils";
 import {
@@ -132,8 +142,8 @@ function elapsedSentence(seconds: number): React.ReactNode | undefined {
  * caller. Measured, it differs in six properties rather than one: gap 12px vs
  * 8px, icon 20px vs 16px, top correction 0 vs 2px (its icon matches the line
  * box exactly), `font-medium` vs inherited, the muted colour on the icon
- * rather than on the line, and no `min-h-5`. It also owns the `id` that the
- * Start button's `aria-describedby` points at. Both shapes satisfy the same
+ * rather than on the line, and no `min-h-5`. It also owns the `id` that both
+ * start buttons' `aria-describedby` point at. Both shapes satisfy the same
  * invariant today — offset 0 from the first line box, measured at 1280 and
  * 360 — and the banner's own comment carries its numbers. */
 function StatusLine({
@@ -245,60 +255,83 @@ export function ImportPage() {
   const jobId = searchParams.get("job") ?? undefined;
   useJobChangeH1Focus(jobId);
 
-  // No active job in the URL -> the entry screen (path + Start).
+  // No active job in the URL -> the entry screen (path + the two starts).
   if (!jobId) {
     return <ImportEntry />;
   }
   return <ImportRun jobId={jobId} />;
 }
 
-/** Derive the resume-banner copy from the active job's origin + set-aside
- * count. Returns the headline sentence (without the set-aside clause, which
- * the JSX appends as a separate muted span). */
-function resumeBannerText(
-  origin: string | undefined,
-  needsReview: number,
-): string {
+/** Derive the resume-banner copy from the active job's origin. An inbox run
+ * gets no banking clause and no count: Review all and a per-row Review start
+ * one too, and those wait on the run page instead of banking. */
+function resumeBannerText(origin: string | undefined): string {
   if (origin === "sweep") {
     return "A sweep is running; uncertain albums are being banked for review.";
   }
   if (origin === "inbox") {
-    // The set-aside clause completes the sentence when there's a count.
-    return needsReview > 0
-      ? "An inbox import is running"
-      : "An inbox import is running.";
+    return "An import from slskd is running.";
   }
   return "An import is already running.";
 }
 
-/** The id linking the entry screen's failure sentence to Start. One screen, one
- * alert (the branches below are exclusive), so a constant is enough — the same
- * shape as {@link IMPORT_AGAIN_ERROR_ID} and the `resume-import-hint` above. */
+/** The id linking the entry screen's failure sentence to both start buttons.
+ * One screen, one alert (the branches below are exclusive), so a constant is
+ * enough — the same shape as {@link IMPORT_AGAIN_ERROR_ID} and the `resume-import-hint` above. */
 const START_ERROR_ID = "start-import-error";
+/** The line under the path box saying what happens to the files. */
+const FILES_LINE_ID = "import-files-help";
+/** The path box, named by its label. */
+const PATH_ID = "import-path";
 
-/** Entry: a server-path input + Start. Polls the active-import probe so a
- * running import the user navigated away from surfaces a Resume banner (and
- * Start is gated while one runs); the blank-path guard and the residual 409
- * (swap-lock / race) are surfaced locally. On success the URL gains
- * `?job=<id>` and the page flips to the live run. */
+/** The help line under the two start buttons, Sweep & bank's description. */
+const SWEEP_HELP_ID = "sweep-bank-help";
+
+/** The two ways to start, each with its own body. */
+type StartKind = "review" | "sweep";
+
+/** A start button's label while its own request is in flight. */
+function StartingLabel() {
+  return (
+    <>
+      <Spinner className="animate-spin" aria-hidden="true" />
+      Starting&hellip;
+    </>
+  );
+}
+
+/** Whether a start request is a sweep (the body Sweep & bank sends). */
+function isSweep(body: StartImportRequest | undefined): boolean {
+  return body?.options?.sweep === true;
+}
+
+/** Entry, in Sonarr's order (decision #54): the path box and its browser, the
+ * file-operation line, Sources, Recent, then Review now / Sweep & bank. Polls
+ * the active-import probe so a running import the user navigated away from
+ * surfaces a Resume banner (and both starts are gated while one runs); the
+ * blank-path guard and the residual 409 (swap-lock / race) are surfaced
+ * locally. On success the path joins Recent, the URL gains `?job=<id>` and the
+ * page flips to the live run. */
 function ImportEntry() {
   const [, setSearchParams] = useSearchParams();
   const [path, setPath] = useState("");
-  const [mode, setMode] = useState<"review" | "sweep">("review");
+  // Where Use in the folder browser, a pin and a Recent row send focus.
+  const pathRef = useRef<HTMLInputElement>(null);
+  const recentFolders = useRecentFolders();
   const start = useStartImport();
   const queryClient = useQueryClient();
   const active = useActiveImport();
+  const operation = useImportOperation();
+  const filesLine =
+    operation.data === undefined ? null : IMPORT_OPERATION_LINE[operation.data];
 
   // The active job's id (resume target) and whether an import owns the slot.
   // `active` and `job_id` are consistent server-side; guard both here so the
   // banner never renders a link to a null id.
   const activeJobId = active.data?.job_id ?? null;
   const importActive = (active.data?.active ?? false) && activeJobId !== null;
-  // An inbox-origin import is the unattended slskd path: name it as such and,
-  // when it set albums aside, surface the count so the user knows there's a
-  // review to do once it finishes.
+  // An inbox-origin import names the slskd inbox, attended or not.
   const origin = active.data?.origin;
-  const needsReview = active.data?.needs_review_count ?? 0;
 
   const trimmed = path.trim();
   // The ONE sentence this screen owns: a 409 with a resumable import names the
@@ -320,26 +353,34 @@ function ImportEntry() {
   // A refusal must not outlive the input it was about. `start.error` survives
   // until the next `mutate`, so after "That folder doesn’t exist." the user
   // fixed the typo and the field stayed red with the stale sentence still wired
-  // into Start's aria-describedby. Same shape as RenameArtistAction's
-  // `onNameChange`, which drops a preview the moment its target changes.
+  // into the start buttons' aria-describedby. Same shape as
+  // RenameArtistAction's `onNameChange`, which drops a preview the moment its
+  // target changes.
   function onPathChange(value: string) {
     setPath(value);
     if (start.isError) start.reset();
   }
 
-  function onSubmit(e: React.SubmitEvent) {
-    e.preventDefault();
+  // A pin or a Recent row: the same setter as typing (a stale refusal clears),
+  // then the box takes focus, so its new value is read and Enter is Review now.
+  // Neither ever starts an import.
+  function onPick(value: string) {
+    onPathChange(value);
+    pathRef.current?.focus();
+  }
+
+  function onStart(kind: StartKind) {
     if (trimmed.length === 0) {
-      return; // Button is disabled too; guard the Enter key.
+      return; // Both buttons are disabled too; guard the Enter key.
     }
-    // The pending half of the button is `aria-disabled`, so the form still
-    // submits while a start is in flight — swallow it here, the same way the
-    // Pause button swallows its own click.
+    // The pending buttons are `aria-disabled`, so the form still submits while
+    // a start is in flight — swallow it here, the same way the Pause button
+    // swallows its own click.
     if (start.isPending) {
       return;
     }
     start.mutate(
-      mode === "sweep"
+      kind === "sweep"
         ? {
             path: trimmed,
             // All three fields: the generated ImportOptions marks defaulted
@@ -350,6 +391,8 @@ function ImportEntry() {
         : { path: trimmed },
       {
         onSuccess: (data) => {
+          // Only a path the server accepted (202) joins Recent (decision #54).
+          recentFolders.add(trimmed);
           setSearchParams({ job: data.job_id });
         },
         onError: (err) => {
@@ -361,6 +404,37 @@ function ImportEntry() {
           }
         },
       },
+    );
+  }
+
+  // Which button's start is in flight: that one shows the spinner.
+  let pendingKind: StartKind | null = null;
+  if (start.isPending) pendingKind = isSweep(start.variables) ? "sweep" : "review";
+
+  // Two states, two attributes. A blank path and a running import are reasons
+  // neither button can be used at all, so they stay `disabled`. Pending is a
+  // button's OWN commit: disabling it there strands keyboard focus on <body>
+  // (the Pagination rule, measured on the Pause button below), so both go
+  // `aria-disabled` and {@link onStart} swallows the repeat.
+  const startButtonState = {
+    disabled: trimmed.length === 0 || importActive,
+    "aria-disabled": start.isPending,
+    className: "aria-disabled:opacity-50",
+  };
+
+  // The descriptions, joined: a button keeps focus through a failed start
+  // (it is only `aria-disabled` while pending), so the sentence saying why the
+  // last press failed is what a keyboard user hears on coming back to it, and
+  // the resume hint still explains a button that is disabled outright.
+  function describedBy(...own: string[]): string | undefined {
+    return (
+      [
+        importActive ? "resume-import-hint" : null,
+        failure === null ? null : START_ERROR_ID,
+        ...own,
+      ]
+        .filter((id) => id !== null)
+        .join(" ") || undefined
     );
   }
 
@@ -376,7 +450,7 @@ function ImportEntry() {
         // A running import the user navigated away from — one click back in.
         // Resuming just navigates to `?job=<id>`; the run page routes to the
         // right phase view and pins any album awaiting a decision. The text's
-        // id describes the disabled Start below (aria-describedby) so a
+        // id describes the disabled start buttons below (aria-describedby) so a
         // keyboard/SR user gets the "why" + the recovery action without
         // duplicate copy — and without a disabled-button title (spec §4 rule).
         <StatusBanner
@@ -403,124 +477,136 @@ function ImportEntry() {
               className="text-muted-foreground size-5 shrink-0 animate-spin"
               aria-hidden="true"
             />
-            <span>
-              {resumeBannerText(origin, needsReview)}
-              {origin === "inbox" && needsReview > 0 && (
-                // This paragraph IS the Start button's aria-describedby, and a
-                // middot is not spoken — the description ran the two clauses
-                // together ("…is running 3 albums set aside…"). The glyph is
-                // hidden and a full stop stands in for it. Not verified with a
-                // real screen reader.
-                <span className="text-muted-foreground font-normal">
-                  <span aria-hidden="true">{SEGMENT_SEP}</span>
-                  <span className="sr-only">{". "}</span>
-                  {needsReview} album{needsReview === 1 ? "" : "s"} set aside for
-                  review.
-                </span>
-              )}
-            </span>
+            <span>{resumeBannerText(origin)}</span>
           </p>
         </StatusBanner>
       )}
 
-      <form className="flex flex-col gap-3" onSubmit={onSubmit}>
+      <form
+        className="flex flex-col gap-3"
+        // Enter in the path box: the form's first submit button, Review now.
+        onSubmit={(e) => {
+          e.preventDefault();
+          onStart("review");
+        }}
+      >
         <div className="flex flex-col gap-2">
-          <span className="text-sm font-medium">Import mode</span>
-          <SegmentedControl
-            aria-label="Import mode"
-            value={mode}
-            onChange={(v) => setMode(v === "sweep" ? "sweep" : "review")}
-            options={[
-              { value: "review", label: "Review now" },
-              { value: "sweep", label: "Sweep & bank" },
-            ]}
-          />
-          <p className="text-muted-foreground text-xs">
-            {mode === "sweep"
-              ? "Unattended: strong matches import automatically; everything else is banked for review on the Review page. Re-running a sweep skips what’s already handled."
-              : "Interactive: each uncertain album waits for your decision before the import continues."}
-          </p>
+          {/* htmlFor, not a wrapping label: the Browse button beside the box
+              cannot sit inside the box's label. */}
+          <label htmlFor={PATH_ID} className="text-sm font-medium">
+            Folder path
+          </label>
+          <div className="flex gap-2">
+            <Input
+              id={PATH_ID}
+              ref={pathRef}
+              type="text"
+              value={path}
+              onChange={(e) => onPathChange(e.target.value)}
+              // Outside a default library (/media/music), which an import refuses.
+              placeholder="/media/downloads/Artist - Album"
+              aria-describedby={filesLine === null ? undefined : FILES_LINE_ID}
+              // The contract's own bound (`StartImportRequest.path`,
+              // max_length=4096 — Linux PATH_MAX, so no real path reaches it).
+              // Past it the server answers FastAPI's array-shaped 422, which is
+              // machine copy and falls through to the page's generic sentence
+              // (see ImportStartRejectedError): a refusal that never says the
+              // word "long". The field refuses the overlong paste instead.
+              maxLength={4096}
+              // Only a 422 is about what is IN this field ("That folder doesn't
+              // exist.", the in-library guard). A 409, a 503 or a dead backend
+              // says nothing is wrong with the path, and reddening it there sends
+              // the user off to edit the one thing that was fine.
+              aria-invalid={start.error instanceof ImportStartRejectedError}
+              // Mono, as every path box in Settings is.
+              className="font-mono"
+            />
+            {/* The page's own setter, so a browsed folder clears a stale
+                refusal exactly as typing does. */}
+            <FolderBrowserDialog
+              value={path}
+              recent={recentFolders.recent[0]?.path ?? null}
+              onUse={onPathChange}
+              fieldRef={pathRef}
+            />
+          </div>
+          {/* What the import will do with these files, from the operation beets
+              loaded. Outside the <label>, so the link is not part of the field's
+              click target. Nothing while it loads or if it can't be read: a
+              guess here would be a promise about the user's files. The id is
+              on the sentence only, so the box is not described as "… Change". */}
+          {filesLine !== null && (
+            <p className="text-muted-foreground text-xs">
+              <span id={FILES_LINE_ID}>{filesLine}</span>{" "}
+              <Link
+                to="/settings/beets"
+                className="text-foreground focus-ring rounded-sm underline"
+              >
+                Change
+              </Link>
+            </p>
+          )}
         </div>
 
-        <label className="flex flex-col gap-2">
-          <span className="text-sm font-medium">Folder path</span>
-          <Input
-            type="text"
-            value={path}
-            onChange={(e) => onPathChange(e.target.value)}
-            placeholder="/music/incoming"
-            aria-label="Folder path"
-            // The contract's own bound (`StartImportRequest.path`,
-            // max_length=4096 — Linux PATH_MAX, so no real path reaches it).
-            // Past it the server answers FastAPI's array-shaped 422, which is
-            // machine copy and falls through to the page's generic sentence
-            // (see ImportStartRejectedError): a refusal that never says the
-            // word "long". The field refuses the overlong paste instead.
-            maxLength={4096}
-            // Only a 422 is about what is IN this field ("That folder doesn't
-            // exist.", the in-library guard). A 409, a 503 or a dead backend
-            // says nothing is wrong with the path, and reddening it there sends
-            // the user off to edit the one thing that was fine.
-            aria-invalid={start.error instanceof ImportStartRejectedError}
-          />
-        </label>
+        <SourcePins onPick={onPick} />
+        <RecentFolderList
+          recent={recentFolders.recent}
+          onPick={onPick}
+          onRemove={recentFolders.remove}
+          fieldRef={pathRef}
+        />
 
-        {failure !== null && (
-          // `break-words`: these sentences carry repr'd filesystem paths, and
-          // Chromium gives no wrap opportunity at `/` or `_`. Measured for the
-          // same family on the Trash page (SettingsTrashPage.tsx), which also
-          // caps the measure — this form is a stretched child of a full-shell
-          // PageBody, so without `max-w-prose` a carried path runs the whole
-          // pane. No `w-full` beside it: the Trash sibling needs one because
-          // its parent is `items-start`, and a stretched flex item is already
-          // full width.
-          <p
-            id={START_ERROR_ID}
-            className="text-destructive max-w-prose text-sm break-words"
-            role="alert"
-          >
-            {failure}
+        {/* `mt-3` (24px from the section above, 8px inside): the refusal
+            reads as the buttons', not as about the last Recent row. */}
+        <div className="mt-3 flex flex-col gap-2">
+          {/* The refusal sits right above the buttons that caused it, so on a
+              phone it lands in view and does not push the pins under a finger. */}
+          {failure !== null && (
+            // `break-words`: these sentences carry repr'd filesystem paths, and
+            // Chromium gives no wrap opportunity at `/` or `_`. Measured for the
+            // same family on the Trash page (SettingsTrashPage.tsx), which also
+            // caps the measure — this form is a stretched child of a full-shell
+            // PageBody, so without `max-w-prose` a carried path runs the whole
+            // pane. No `w-full` beside it: the Trash sibling needs one because
+            // its parent is `items-start`, and a stretched flex item is already
+            // full width.
+            <p
+              id={START_ERROR_ID}
+              className="text-destructive max-w-prose text-sm break-words"
+              role="alert"
+            >
+              {failure}
+            </p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="submit"
+              {...startButtonState}
+              aria-describedby={describedBy()}
+            >
+              {pendingKind === "review" ? (
+                <StartingLabel />
+              ) : (
+                <>
+                  <AddFromFolder aria-hidden="true" />
+                  Review now
+                </>
+              )}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              {...startButtonState}
+              aria-describedby={describedBy(SWEEP_HELP_ID)}
+              onClick={() => onStart("sweep")}
+            >
+              {pendingKind === "sweep" ? <StartingLabel /> : "Sweep & bank"}
+            </Button>
+          </div>
+          <p id={SWEEP_HELP_ID} className="text-muted-foreground text-xs">
+            Sweep &amp; bank imports confident matches and banks the rest for
+            Review.
           </p>
-        )}
-
-        <div>
-          <Button
-            type="submit"
-            // Two states, two attributes. A blank path and a running import are
-            // reasons the control cannot be used at all, so they stay
-            // `disabled`. Pending is the button's OWN commit: disabling it there
-            // strands keyboard focus on <body> (the Pagination rule, measured on
-            // the Pause button below), so it goes `aria-disabled` and the submit
-            // handler swallows the repeat.
-            disabled={trimmed.length === 0 || importActive}
-            aria-disabled={start.isPending}
-            className="aria-disabled:opacity-50"
-            // Both descriptions, joined: this button keeps focus through a
-            // failed start (it is only `aria-disabled` while pending), so the
-            // sentence saying why the last press failed is what a keyboard user
-            // hears on coming back to it — and the resume hint still explains a
-            // Start that is disabled outright.
-            aria-describedby={
-              [
-                importActive ? "resume-import-hint" : null,
-                failure !== null ? START_ERROR_ID : null,
-              ]
-                .filter((id) => id !== null)
-                .join(" ") || undefined
-            }
-          >
-            {start.isPending ? (
-              <>
-                <Spinner className="animate-spin" aria-hidden="true" />
-                Starting&hellip;
-              </>
-            ) : (
-              <>
-                <AddFromFolder aria-hidden="true" />
-                {mode === "sweep" ? "Start sweep" : "Start import"}
-              </>
-            )}
-          </Button>
         </div>
       </form>
     </PageBody>
@@ -1849,8 +1935,13 @@ function JobFailed({
           // punctuation. The middot dialect glued the duration onto the end of
           // it, which read as part of the message and could wrap a line open on
           // a bare "·". Each clause gets its own line, its own sentence.
+          // `whitespace-pre-line` keeps the error's own line break: the
+          // cross-filesystem line and beets' text arrive as `line1\nline2`.
+          // `wrap-anywhere`: beets' text can carry a long path with no space.
           <>
-            {state.error ?? "The import stopped unexpectedly."}
+            <span className="whitespace-pre-line wrap-anywhere">
+              {state.error ?? "The import stopped unexpectedly."}
+            </span>
             {counts !== null && <span className="mt-1 block">{counts}</span>}
             {setAside > 0 && (
               <span className="mt-1 block">

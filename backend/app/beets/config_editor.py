@@ -14,8 +14,9 @@ emit as ``true``/``false`` regardless of the parsed form; this is the
 maintainer's documented invariant, so the editor does not try to fight it.
 
 Currently exports: ``parse_yaml``, ``settings_mapping``, ``atomic_write``,
-``read_naming``, ``save``, ``save_naming``, and ``apply`` (asyncio-locked
-threadpool rebuild that swaps ``app.state.beets_library``).
+``read_naming``, ``save``, ``save_naming``, ``apply`` (asyncio-locked
+threadpool rebuild that swaps ``app.state.beets_library``) and
+``set_file_operation`` (the Keep downloads switch: a write and Apply's reload).
 
 Save writes the submitted document straight back to disk (the editor serves and
 edits the RAW ``config.yaml``): there is no secret-preserve merge — masking the
@@ -55,7 +56,8 @@ from app.beets.config_check import (
 
 # ``build_config_snapshot`` is used by save()/apply() to return the post-write
 # snapshot (raw editable doc + redacted effective view + freshness fields).
-from app.beets.config_snapshot import build_config_snapshot
+from app.beets.config_snapshot import build_config_snapshot, is_apply_pending
+from app.beets.import_operation import EVERY_RUN, FILE_FLAGS, view_file_operation
 from app.beets.library import LibraryHandle
 
 # Bound at MODULE LEVEL on purpose: the Apply tests monkeypatch
@@ -78,12 +80,13 @@ from app.beets.store_layout import (
     StoreLayoutError,
     checked_store_dirs,
     layout_check_for_config,
+    load_candidate,
     yaml_error_at,
 )
 from app.config import Settings
 from app.config import settings as _module_settings
 from app.library_busy import swap_blocked_by_job
-from app.models.config_api import BeetsConfigSnapshot
+from app.models.config_api import BeetsConfigSnapshot, FileOperation, SetImportOperation
 from app.models.config_editor import (
     NamingConfig,
     NamingRuleInput,
@@ -101,6 +104,7 @@ __all__ = [
     "read_naming",
     "save",
     "save_naming",
+    "set_file_operation",
     "settings_mapping",
 ]
 
@@ -345,17 +349,7 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
         try:
             on_disk_bytes = _read_on_disk(handle.config_path)
             # Before the compare: its 409 hands out the sha "Overwrite anyway" sends.
-            on_disk_text = _on_disk_text(on_disk_bytes)
-            on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
-            if on_disk_sha != req.base_sha256:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "detail": "File changed on disk",
-                        "current_yaml_text": on_disk_text,
-                        "current_sha256": on_disk_sha,
-                    },
-                )
+            _refuse_a_changed_file(on_disk_bytes, _on_disk_text(on_disk_bytes), req.base_sha256)
 
             # 3. Atomic write of the text as submitted.
             _write_on_disk(handle.config_path, req.yaml_text)
@@ -433,20 +427,44 @@ _ON_DISK_ERROR_TYPE: Final = "config_on_disk"
 
 
 def _read_on_disk(config_path: Path) -> bytes:
-    """config.yaml's bytes for both save routes and the Naming GET; an OS error is a 422.
+    """config.yaml's bytes for both save routes and the Naming GET; an OS error is a 422."""
+    return _read_on_disk_at(config_path)[0]
+
+
+def _read_on_disk_at(config_path: Path) -> tuple[bytes, float]:
+    """:func:`_read_on_disk`, and the file's mtime from the same ``stat``.
 
     Only a regular file is opened, the test ``os.path.isfile`` makes and confuse
     reads the user file under (``confuse/sources.py:94-96``). Measured: a FIFO
     blocked the open while a save held ``_SAVE_LOCK``, until a restart.
     """
     try:
-        if not stat.S_ISREG(config_path.stat().st_mode):
+        found = config_path.stat()
+        if not stat.S_ISREG(found.st_mode):
             raise _UnusableOnDisk("config.yaml is not a regular file.")
-        return config_path.read_bytes()
+        return config_path.read_bytes(), found.st_mtime
     except OSError as exc:
         raise _UnusableOnDisk(
             f"config.yaml could not be read: {exc.strerror or type(exc).__name__}."
         ) from exc
+
+
+def _refuse_a_changed_file(on_disk_bytes: bytes, on_disk_text: str, base_sha256: str) -> None:
+    """The writers' compare-and-swap: 409 with the file as it now stands when it moved on.
+
+    The body is a literal dict, not model-derived, so the contract test's
+    real-body half stays load-bearing (``test_config_conflict_body_contract``).
+    """
+    on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
+    if on_disk_sha != base_sha256:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "detail": "File changed on disk",
+                "current_yaml_text": on_disk_text,
+                "current_sha256": on_disk_sha,
+            },
+        )
 
 
 def _write_on_disk(config_path: Path, text: str) -> None:
@@ -695,16 +713,7 @@ def save_naming(
             on_disk_bytes = _read_on_disk(handle.config_path)
             # Before the compare, as in :func:`save`.
             on_disk_text = _on_disk_text(on_disk_bytes)
-            on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
-            if on_disk_sha != req.base_sha256:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "detail": "File changed on disk",
-                        "current_yaml_text": on_disk_text,
-                        "current_sha256": on_disk_sha,
-                    },
-                )
+            _refuse_a_changed_file(on_disk_bytes, on_disk_text, req.base_sha256)
 
             # 3. Round-trip merge — only the two nodes change.
             _on_disk_document(on_disk_text)
@@ -748,6 +757,95 @@ def save_naming(
                 detail=[{"loc": "", "msg": str(exc), "type": _ON_DISK_ERROR_TYPE}],
             ) from exc
     return build_config_snapshot(handle)
+
+
+#: The Keep downloads switch's refusals, in the order they are asked.
+JOB_RUNNING: Final = "A library job is running. Try again when it finishes."
+APPLY_FIRST: Final = "Apply saved changes first."
+IMPORT_NOT_EDITABLE: Final = "Fix import: in config.yaml first."
+INCLUDE_DECIDES: Final = "An include file sets this."
+
+#: Per switch position: the operation it lands on, the key it writes ``yes``,
+#: and the keys it sets to ``no`` where ``import:`` already has them. ``copy``
+#: is never written: move and hardlink both outrank it in ``set_config``.
+_SWITCH: Final[dict[bool, tuple[FileOperation, str, tuple[str, ...]]]] = {
+    True: ("hardlink", "hardlink", ("move", "link", "reflink")),
+    False: ("move", "move", ("hardlink", "link", "reflink")),
+}
+
+
+def _import_mapping(doc: CommentedMap) -> CommentedMap:
+    """``doc``'s ``import:``, added at the end when absent; 422 when the switch can't edit it alone.
+
+    Refused: a value that is not a mapping, and one shared with another key (an
+    anchor, an alias, or a ``<<`` merge), where a write here changes that key too.
+    That includes an ``import:`` the document only has through a top-level ``<<``,
+    which ruamel reads as one of its keys but is the merged mapping's own.
+    """
+    if "import" not in doc:
+        doc["import"] = CommentedMap()
+    elif "import" not in dict(doc.non_merged_items()):
+        raise HTTPException(status_code=422, detail=IMPORT_NOT_EDITABLE)
+    imp = doc["import"]
+    if not isinstance(imp, CommentedMap) or imp.anchor.value is not None or imp.merge:
+        raise HTTPException(status_code=422, detail=IMPORT_NOT_EDITABLE)
+    return imp
+
+
+def _flip(imp: CommentedMap, keep_downloads: bool) -> None:
+    """Write the switch's keys into ``imp`` in place.
+
+    A new key goes before the first file-operation key, or first.
+    """
+    _, key, cleared = _SWITCH[keep_downloads]
+    for other in cleared:
+        if other in imp:
+            imp[other] = False
+    if key in imp:
+        imp[key] = True
+        return
+    first = next((i for i, name in enumerate(imp) if name in FILE_FLAGS), 0)
+    imp.insert(first, key, True)
+
+
+def _operation_loaded_from(text: str, beets_dir: Path) -> FileOperation:
+    """What imports would run once ``text`` is loaded: its ``include:`` files merged on top."""
+    loaded = load_candidate(load_config_text(text), beets_dir)
+    return view_file_operation(loaded.config["import"], EVERY_RUN)
+
+
+def _write_file_operation(
+    handle: LibraryHandle, req: SetImportOperation, *, settings: Settings
+) -> None:
+    """Write the Keep downloads switch into config.yaml's ``import:``; a refusal writes nothing.
+
+    The Naming save's steps (:func:`save_naming`), in its lock: read, compare,
+    beets' read then ruamel's, change only the switch's keys, the Beets Save's
+    check, atomic write. Two refusals of its own: saved edits Apply has not
+    loaded, which this request's reload would load unseen, and an include that
+    would still decide the operation (includes outrank config.yaml,
+    ``beets/__init__.py:29-35``).
+    """
+    target, _, _ = _SWITCH[req.keep_downloads]
+    with _SAVE_LOCK:
+        try:
+            on_disk_bytes, mtime = _read_on_disk_at(handle.config_path)
+            on_disk_text = _on_disk_text(on_disk_bytes)
+            if is_apply_pending(handle, mtime):
+                raise HTTPException(status_code=409, detail=APPLY_FIRST)
+            _refuse_a_changed_file(on_disk_bytes, on_disk_text, req.base_sha256)
+            _on_disk_document(on_disk_text)
+            doc = _on_disk_mapping(on_disk_text)
+            _flip(_import_mapping(doc), req.keep_downloads)
+            text = dumped(doc, _yaml())
+            errors = check_config_text(text, settings=settings, handle=handle).errors
+            if errors:
+                raise HTTPException(status_code=422, detail=_on_disk_row(errors[0]))
+            if _operation_loaded_from(text, handle.beets_dir) != target:
+                raise HTTPException(status_code=422, detail=INCLUDE_DECIDES)
+            _write_on_disk(handle.config_path, text)
+        except _UnusableOnDisk as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 class ApplyRefusal(NamedTuple):
@@ -1002,101 +1100,132 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
                 status_code=409,
                 detail="Import in progress; Apply available when it finishes / lyrics backfill",
             )
-        old: LibraryHandle = app.state.beets_library
-        settings = _settings(app)
-        refusal = await run_in_threadpool(on_disk_refusal, old, settings)
-        if refusal is not None:
-            raise HTTPException(status_code=422, detail=refusal._asdict())
-        try:
-            # ``old.beets_dir``, the dir resolved at boot, not the setting: the
-            # gate above read that dir, and a symlinked setting re-pointed since
-            # made the restore open another dir's library.
-            read = await run_in_threadpool(read_beets_config, str(old.beets_dir))
-        except Exception as exc:
-            # Nothing is torn down yet, so the old config, plugins and library
-            # keep serving. Broad on purpose: whatever the read raised, the
-            # process is unchanged. Step 2b read the same file, so this arm is
-            # reached when the file changed in between.
-            raise HTTPException(status_code=422, detail=_read_refusal(exc)._asdict()) from exc
-        new, failure = await _rebuild_or_restore(old, read)
-        app.state.beets_library = new
-        # Re-attach the fresh lib to the LIVE import registry. The lifespan
-        # attaches the lib exactly once (main.py), and the registry's runner
-        # captures it at construction (``_resolve_runner`` builds
-        # ``BeetsImportRunner(self._lib, ...)``); without this, every later
-        # import — manual, inbox webhook, or bank-apply — would silently keep
-        # running against the pre-Apply Library (its ``directory``,
-        # ``replacements`` and cached ``path_formats`` are frozen at build time,
-        # and a changed ``library:`` would write a DIFFERENT DB than the UI now
-        # reads). Lazy imports mirror this file's convention and dodge the
-        # api.bank → beets.duplicates → beets.config_editor cycle. Inside the
-        # swap lock, after the state swap, mirroring the lifespan wiring.
-        from app.api.bank import get_bank_dir
-        from app.import_jobs.registry import get_registry
-        from app.playlists.store import get_playlists_dir
+        new = await _reload(app)
+    return build_config_snapshot(new)
 
-        # 4b. Backstop — the same question, asked of what beets ACTUALLY loaded.
-        # Step 2b reads config.yaml and its includes itself, before beets does;
-        # this one reads ``new.lib.directory`` and ``new.lib.path`` off the live
-        # handle, so a file edited between the two reads, or a divergence
-        # between step 2b's include merge and beets' (a beets upgrade), is
-        # caught here instead of shipping a refused layout into the process.
-        #
-        # It also supplies the pair the registry needs. Resolving those two paths
-        # raises on a symlink loop, outside every ``except StoreLayoutError`` the
-        # Apply path has; taking them from ``checked_store_dirs`` gives that the
-        # same 422 as a refusal.
-        try:
-            trash_dir, origins_dir = checked_store_dirs(settings, new)
-        except StoreLayoutError as exc:
-            # ONE library after Apply, whatever the outcome. The rebuild has
-            # already closed the old one and the swap above stands, so leaving
-            # the registry holding it was measured to let an import "succeed"
-            # into the pre-Apply store — SQLite reopens a closed handle on
-            # demand — while the UI read the new one. The registry gets the NEW
-            # library, no store pair, and the refusal: measured, an import
-            # started in this state was accepted and wrote into the beets data
-            # dir, so ``start`` now refuses with this sentence.
-            # ``.exception``: the record carries the traceback with the
-            # sentence, like the three boot refusals. After a restore the
-            # config running is the old one, and the rejected value is still in
-            # config.yaml, so the answer is the restore's.
-            logging.getLogger("uvicorn.error").exception(
-                "Apply %s a config whose store layout is refused: %s",
-                "loaded" if failure is None else "put back",
-                exc,
-            )
-            did = "loaded config.yaml" if failure is None else "put the old config back"
-            get_registry().attach_library(
-                new.lib,
-                None,
-                bank_dir=get_bank_dir(),
-                playlists_dir=get_playlists_dir(),
-                trash_origins_dir=None,
-                refusal=f"Apply {did}. {exc}",
-            )
-            if failure is not None:
-                raise HTTPException(
-                    status_code=422, detail=_restored_refusal(failure)._asdict()
-                ) from failure
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "message": f"Apply loaded config.yaml. {exc.headline}.",
-                    "recovery": f"{exc} Then restart MusicDrop.",
-                },
-            ) from exc
 
+async def set_file_operation(request: Request, req: SetImportOperation) -> BeetsConfigSnapshot:
+    """Keep downloads: write beets' keys into config.yaml, then Apply's reload, as one step.
+
+    Under Apply's swap lock with its job gate inside it, so no job starts
+    between the write and the reload. Every refusal comes before the write
+    (:func:`_write_file_operation`); after it, Apply's own 422 and 500.
+    """
+    app = request.app
+
+    async with _swap_lock(app):
+        if swap_blocked_by_job():
+            raise HTTPException(status_code=409, detail=JOB_RUNNING)
+        await run_in_threadpool(
+            _write_file_operation, app.state.beets_library, req, settings=_settings(app)
+        )
+        new = await _reload(app)
+    return build_config_snapshot(new)
+
+
+async def _reload(app: FastAPI) -> LibraryHandle:
+    """Apply's steps 2b-4b (:func:`apply`): load config.yaml as it is on disk, and swap it in.
+
+    The caller holds the swap lock and has passed the job gate.
+    """
+    old: LibraryHandle = app.state.beets_library
+    settings = _settings(app)
+    refusal = await run_in_threadpool(on_disk_refusal, old, settings)
+    if refusal is not None:
+        raise HTTPException(status_code=422, detail=refusal._asdict())
+    try:
+        # ``old.beets_dir``, the dir resolved at boot, not the setting: the
+        # gate above read that dir, and a symlinked setting re-pointed since
+        # made the restore open another dir's library.
+        read = await run_in_threadpool(read_beets_config, str(old.beets_dir))
+    except Exception as exc:
+        # Nothing is torn down yet, so the old config, plugins and library
+        # keep serving. Broad on purpose: whatever the read raised, the
+        # process is unchanged. Step 2b read the same file, so this arm is
+        # reached when the file changed in between.
+        raise HTTPException(status_code=422, detail=_read_refusal(exc)._asdict()) from exc
+    new, failure = await _rebuild_or_restore(old, read)
+    app.state.beets_library = new
+    # Re-attach the fresh lib to the LIVE import registry. The lifespan
+    # attaches the lib exactly once (main.py), and the registry's runner
+    # captures it at construction (``_resolve_runner`` builds
+    # ``BeetsImportRunner(self._lib, ...)``); without this, every later
+    # import — manual, inbox webhook, or bank-apply — would silently keep
+    # running against the pre-Apply Library (its ``directory``,
+    # ``replacements`` and cached ``path_formats`` are frozen at build time,
+    # and a changed ``library:`` would write a DIFFERENT DB than the UI now
+    # reads). Lazy imports mirror this file's convention and dodge the
+    # api.bank → beets.duplicates → beets.config_editor cycle. Inside the
+    # swap lock, after the state swap, mirroring the lifespan wiring.
+    from app.api.bank import get_bank_dir
+    from app.import_jobs.registry import get_registry
+    from app.playlists.store import get_playlists_dir
+
+    # 4b. Backstop — the same question, asked of what beets ACTUALLY loaded.
+    # Step 2b reads config.yaml and its includes itself, before beets does;
+    # this one reads ``new.lib.directory`` and ``new.lib.path`` off the live
+    # handle, so a file edited between the two reads, or a divergence
+    # between step 2b's include merge and beets' (a beets upgrade), is
+    # caught here instead of shipping a refused layout into the process.
+    #
+    # It also supplies the pair the registry needs. Resolving those two paths
+    # raises on a symlink loop, outside every ``except StoreLayoutError`` the
+    # Apply path has; taking them from ``checked_store_dirs`` gives that the
+    # same 422 as a refusal.
+    try:
+        trash_dir, origins_dir = checked_store_dirs(settings, new)
+    except StoreLayoutError as exc:
+        # ONE library after Apply, whatever the outcome. The rebuild has
+        # already closed the old one and the swap above stands, so leaving
+        # the registry holding it was measured to let an import "succeed"
+        # into the pre-Apply store — SQLite reopens a closed handle on
+        # demand — while the UI read the new one. The registry gets the NEW
+        # library, no store pair, and the refusal: measured, an import
+        # started in this state was accepted and wrote into the beets data
+        # dir, so ``start`` now refuses with this sentence.
+        # ``.exception``: the record carries the traceback with the
+        # sentence, like the three boot refusals. After a restore the
+        # config running is the old one, and the rejected value is still in
+        # config.yaml, so the answer is the restore's.
+        logging.getLogger("uvicorn.error").exception(
+            "Apply %s a config whose store layout is refused: %s",
+            "loaded" if failure is None else "put back",
+            exc,
+        )
+        did = "loaded config.yaml" if failure is None else "put the old config back"
         get_registry().attach_library(
             new.lib,
-            trash_dir,
+            None,
             bank_dir=get_bank_dir(),
             playlists_dir=get_playlists_dir(),
-            trash_origins_dir=origins_dir,
+            trash_origins_dir=None,
+            refusal=f"Apply {did}. {exc}",
+            settings=settings,
+            beets_dir=new.beets_dir,
         )
         if failure is not None:
             raise HTTPException(
                 status_code=422, detail=_restored_refusal(failure)._asdict()
             ) from failure
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": f"Apply loaded config.yaml. {exc.headline}.",
+                "recovery": f"{exc} Then restart MusicDrop.",
+            },
+        ) from exc
 
-    return build_config_snapshot(new)
+    get_registry().attach_library(
+        new.lib,
+        trash_dir,
+        bank_dir=get_bank_dir(),
+        playlists_dir=get_playlists_dir(),
+        trash_origins_dir=origins_dir,
+        settings=settings,
+        beets_dir=new.beets_dir,
+    )
+    if failure is not None:
+        raise HTTPException(
+            status_code=422, detail=_restored_refusal(failure)._asdict()
+        ) from failure
+    return new

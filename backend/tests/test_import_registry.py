@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.beets.import_session import ImportAbortError, InLibraryCopyError
+from app.config import Settings
 from app.import_jobs.fakes import FakeImportRunner
 from app.import_jobs.registry import ImportJobRegistry
 from app.models.import_api import ImportAlbumStatus, ImportJobState, ImportPhase, SweepStatus
@@ -1180,22 +1181,30 @@ def test_attach_library_threads_bank_dir_to_resolved_runner(
             trash_origins_dir: object = None,
             bank_dir: object = None,
             playlists_dir: object = None,
+            *,
+            settings: object = None,
+            beets_dir: object = None,
         ) -> None:
             captured["lib"] = lib
             captured["trash_dir"] = trash_dir
             captured["trash_origins_dir"] = trash_origins_dir
             captured["bank_dir"] = bank_dir
             captured["playlists_dir"] = playlists_dir
+            captured["settings"] = settings
+            captured["beets_dir"] = beets_dir
 
     monkeypatch.setattr(registry_mod, "BeetsImportRunner", _FakeRunner)
     reg = ImportJobRegistry()
     lib = object()
+    layout_settings = Settings()
     reg.attach_library(
         lib,
         Path("/t"),
         bank_dir=Path("/b"),
         playlists_dir=Path("/p"),
         trash_origins_dir=Path("/o"),
+        settings=layout_settings,
+        beets_dir=Path("/d"),
     )
     reg._resolve_runner()
     assert captured == {
@@ -1207,6 +1216,9 @@ def test_attach_library_threads_bank_dir_to_resolved_runner(
         "trash_origins_dir": Path("/o"),
         "bank_dir": Path("/b"),
         "playlists_dir": Path("/p"),
+        # What the import refusal lists MusicDrop's own folders from.
+        "settings": layout_settings,
+        "beets_dir": Path("/d"),
     }
 
 
@@ -1233,10 +1245,22 @@ def test_a_banked_row_applied_after_a_trash_change_uses_the_new_pair(
     monkeypatch.setattr(registry_mod, "BeetsImportRunner", _FakeRunner)
     reg = ImportJobRegistry()
     lib = object()
-    reg.attach_library(lib, Path("/old/trash"), trash_origins_dir=Path("/old/origins"))
+    reg.attach_library(
+        lib,
+        Path("/old/trash"),
+        trash_origins_dir=Path("/old/origins"),
+        settings=None,
+        beets_dir=None,
+    )
     reg._resolve_runner()  # the row is banked against this pair
 
-    reg.attach_library(lib, Path("/new/trash"), trash_origins_dir=Path("/new/origins"))
+    reg.attach_library(
+        lib,
+        Path("/new/trash"),
+        trash_origins_dir=Path("/new/origins"),
+        settings=None,
+        beets_dir=None,
+    )
     reg._resolve_runner()  # the apply, later
 
     assert seen == [
@@ -1915,7 +1939,9 @@ def test_start_refuses_while_the_attached_library_is_refused() -> None:
 
     runner = FakeImportRunner()
     reg = ImportJobRegistry(runner)
-    reg.attach_library(object(), refusal="Apply loaded config.yaml. T is M.")
+    reg.attach_library(
+        object(), refusal="Apply loaded config.yaml. T is M.", settings=None, beets_dir=None
+    )
 
     with pytest.raises(LibraryRefusedError, match=r"^Apply loaded config\.yaml\. T is M\.$"):
         reg.start("/x")
@@ -1924,7 +1950,7 @@ def test_start_refuses_while_the_attached_library_is_refused() -> None:
     assert isinstance(LibraryRefusedError("x"), RuntimeError)
 
     # A clean attach clears it: the field is assigned on every call.
-    reg.attach_library(object())
+    reg.attach_library(object(), settings=None, beets_dir=None)
     assert reg.start("/x")
 
 

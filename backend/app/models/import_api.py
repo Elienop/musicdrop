@@ -19,7 +19,7 @@ from pydantic import AfterValidator, BaseModel, Field, StringConstraints
 from app.models.import_models import ImportOptions, ImportOrigin, Recommendation
 
 
-def _without_a_nul(path: str) -> str:
+def without_a_nul(path: str) -> str:
     """Refuse an embedded NUL: ``os.path.realpath`` 500'd the start and beets'
     ``lstat`` failed the job (``test_a_nul_in_the_posted_path_is_refused_before_any_job``)."""
     if "\x00" in path:
@@ -93,7 +93,7 @@ class StartImportRequest(BaseModel):
     path: Annotated[
         str,
         StringConstraints(strip_whitespace=True, min_length=1, max_length=4096),
-        AfterValidator(_without_a_nul),
+        AfterValidator(without_a_nul),
     ]
     options: ImportOptions | None = None
 
@@ -211,8 +211,10 @@ class ImportJobState(BaseModel):
     albums: list[ImportAlbumSummary]
     # The worker's failure message when phase == failed; None otherwise.
     error: str | None
-    # Where the import came from: "manual" (the web Start flow) or "inbox" (the
-    # unattended acquisition seam). Defaulted so manual imports need no change.
+    # Where the import came from: "manual" (``POST /api/import``: Add from folder
+    # and its re-runs), "inbox" (slskd's folder: the drain, Review all, or a row's
+    # Review), "sweep" or "bank_apply".
+    # Defaulted so manual imports need no change.
     origin: ImportOrigin = "manual"
     # So a reloaded page can re-post it ("Import them again" sends the same
     # folder with ``incremental: false``). None for a multi-folder start.
@@ -286,7 +288,7 @@ class ActiveImportStatus(BaseModel):
     # idle ``{active: false}`` fallback type-checks against the same model.
     origin: ImportOrigin = "manual"
     # How many albums the active import has set aside (needs_review +
-    # needs_dup_resolution, minus ``note`` rows) — the FE inbox cue's count.
+    # needs_dup_resolution, minus ``note`` rows) — the nav Review badge's count.
     needs_review_count: int = 0
     # The active sweep's counters (None when the active job is not a sweep, or
     # idle) — the FE sweep banner reads this off the existing probe.

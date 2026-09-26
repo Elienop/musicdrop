@@ -121,7 +121,7 @@ def _real_registry(tmp_path: Path) -> tuple[ImportJobRegistry, Library]:
     (music / ".keep").write_bytes(b"")  # a real root has entries
     lib = build_library(str(tmp_path / "library.db"), str(music))
     reg = reset_registry(runner=None)
-    reg.attach_library(lib)
+    reg.attach_library(lib, settings=None, beets_dir=None)
     return reg, lib
 
 
@@ -790,6 +790,7 @@ def test_only_the_import_job_gates_reach_the_forgiving_predicate() -> None:
     assert readers == {"import_jobs/gates.py", "import_jobs/runner.py"}, readers
 
 
+@pytest.mark.usefixtures("inbox_bank_dir")
 def test_the_inbox_review_refuses_while_the_library_root_is_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -801,7 +802,7 @@ def test_the_inbox_review_refuses_while_the_library_root_is_unavailable(
     folder = _album_folder(inbox, b"okc")
     # The settle window is 60s by default; the folder is settled for this test.
     monkeypatch.setattr(acq_api, "settled_folders", lambda *a, **k: [folder])
-    monkeypatch.setattr(acq_api, "count_pending", lambda _d: 1)
+    monkeypatch.setattr(acq_api, "count_pending", lambda *_a, **_k: 1)
     _drop_root(lib, bare=True)
     monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
     client = TestClient(app, raise_server_exceptions=False)
@@ -1284,6 +1285,7 @@ def test_the_wait_is_logged_once_and_its_end_is_logged_once(
 # ----- 12: Review all refuses when a folder vanished since the listing -----
 
 
+@pytest.mark.usefixtures("inbox_bank_dir")
 def test_review_all_survives_a_folder_that_vanished_since_the_listing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1301,9 +1303,14 @@ def test_review_all_survives_a_folder_that_vanished_since_the_listing(
     """
     _canned_lookup(monkeypatch)
     _reg, lib = _real_registry(tmp_path)
+    # A config that keeps downloads: Review all follows beets' own file
+    # operation (decisions #77), so the folder that imported keeps its files.
+    config["import"]["copy"] = True
+    config["import"]["move"] = False
     inbox = tmp_path / "inbox"
     gone = _album_folder(inbox, b"gone")
     stays = _album_folder(inbox, b"stays")
+    tracks = sorted(p.name for p in stays.iterdir())
 
     def settle_then_vanish(*args: Any, **kwargs: Any) -> list[Path]:
         """Both folders are settled; one is removed in the window before start."""
@@ -1313,7 +1320,7 @@ def test_review_all_survives_a_folder_that_vanished_since_the_listing(
     import app.api.acquisition as acq_api
 
     monkeypatch.setattr(acq_api, "settled_folders", settle_then_vanish)
-    monkeypatch.setattr(acq_api, "count_pending", lambda _d: 2)
+    monkeypatch.setattr(acq_api, "count_pending", lambda *_a, **_k: 2)
     monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
     client = TestClient(app)
     resp = client.post("/api/acquisition/review-inbox")
@@ -1324,9 +1331,10 @@ def test_review_all_survives_a_folder_that_vanished_since_the_listing(
     assert state["phase"] == "done", state
     assert not gone.exists()
     assert len(list(lib.albums())) == 1
-    assert not stays.exists() or sorted(p.name for p in stays.iterdir()) == []
+    assert sorted(p.name for p in stays.iterdir()) == tracks
 
 
+@pytest.mark.usefixtures("inbox_bank_dir")
 def test_review_all_refuses_when_EVERY_settled_folder_vanished(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1350,7 +1358,7 @@ def test_review_all_refuses_when_EVERY_settled_folder_vanished(
     import app.api.acquisition as acq_api
 
     monkeypatch.setattr(acq_api, "settled_folders", settle_then_vanish)
-    monkeypatch.setattr(acq_api, "count_pending", lambda _d: 2)
+    monkeypatch.setattr(acq_api, "count_pending", lambda *_a, **_k: 2)
     monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
     client = TestClient(app)
     resp = client.post("/api/acquisition/review-inbox")
@@ -1561,6 +1569,7 @@ def test_a_source_the_owner_cannot_read_says_so_rather_than_missing(tmp_path: Pa
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
+@pytest.mark.usefixtures("inbox_bank_dir")
 def test_review_all_keeps_the_reason_when_the_settled_folders_are_unreadable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1588,7 +1597,7 @@ def test_review_all_keeps_the_reason_when_the_settled_folders_are_unreadable(
     import app.api.acquisition as acq_api
 
     monkeypatch.setattr(acq_api, "settled_folders", lambda *a, **k: [folder])
-    monkeypatch.setattr(acq_api, "count_pending", lambda _d: 1)
+    monkeypatch.setattr(acq_api, "count_pending", lambda *_a, **_k: 1)
     monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
     inbox.chmod(0o600)
     try:
@@ -1839,6 +1848,7 @@ def _loop_recording_runner(on_loop: list[bool], threads: list[int] | None = None
 
 
 @pytest.mark.anyio
+@pytest.mark.usefixtures("inbox_bank_dir")
 async def test_review_all_starts_off_the_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1851,7 +1861,7 @@ async def test_review_all_starts_off_the_loop(
     started_on_loop: list[bool] = []
     reset_registry(runner=_loop_recording_runner(started_on_loop))
     monkeypatch.setattr(acq_api, "settled_folders", lambda *a, **k: [folder])
-    monkeypatch.setattr(acq_api, "count_pending", lambda _d: 1)
+    monkeypatch.setattr(acq_api, "count_pending", lambda *_a, **_k: 1)
     monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
 
     transport = httpx.ASGITransport(app=app)

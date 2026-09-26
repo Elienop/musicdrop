@@ -162,7 +162,7 @@ def test_list_inbox_emits_a_display_safe_name(tmp_path: Path) -> None:
     raw = _mkdir_raw(inbox, BAD_BYTES)
     with open(os.path.join(raw, b"01 track.flac"), "wb") as fh:
         fh.write(b"\x00")
-    assert [item.name for item in list_inbox(inbox, None)] == [BAD_DISPLAY]
+    assert [item.name for item in list_inbox(inbox, None, held=frozenset())] == [BAD_DISPLAY]
 
 
 def test_list_trashed_albums_emits_a_display_safe_husk_folder(tmp_path: Path) -> None:
@@ -349,6 +349,7 @@ def test_trash_error_detail_survives_an_undecodable_path(
 # ----- Inbox: listing renders, and the item name still round-trips -----
 
 
+@pytest.mark.usefixtures("inbox_bank_dir")
 def test_inbox_listing_and_per_item_import_round_trip(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

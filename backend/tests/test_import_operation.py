@@ -134,7 +134,7 @@ def test_forced_file_operation_lets_the_overlay_win_over_the_config() -> None:
     config["import"]["hardlink"] = True  # the user's config: keep downloads
     assert configured_file_operation() == "hardlink"
 
-    # An inbox import forces a move over that: the download does NOT survive.
+    # A run started with ``operation: move`` forces it: the download does NOT survive.
     assert forced_file_operation(file_flags("move")) == "move"
     # A Trash restore files nothing at all.
     assert forced_file_operation(file_flags("in_place")) == "in_place"

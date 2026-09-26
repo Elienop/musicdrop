@@ -4,7 +4,7 @@ import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { bumpAssetVersion } from "@/api/assetVersion";
 
 // The library-content query family — the union of what the in-tab mutation
-// hooks invalidate. Prefix keys (e.g. ["album"]) match their detail variants
+// hooks invalidate, and Review's list of folders not imported yet. Prefix keys (e.g. ["album"]) match their detail variants
 // (["album", id], ["album", id, "missing"]; ["playlist"] covers
 // ["playlist", id]).
 const LIBRARY_CONTENT_KEYS = [
@@ -19,6 +19,11 @@ const LIBRARY_CONTENT_KEYS = [
   ["lyrics"],
   ["playlists"],
   ["playlist"],
+  // Review's "Not imported yet": a finished import records its folders as
+  // imported before the event (backend/app/import_jobs/registry.py), so an
+  // open Review page drops a landed folder now, not at the next 30s poll,
+  // where a Review press would have imported it again.
+  ["inbox-items"],
 ] as const;
 
 /** Invalidate every library-content query so mounted views background-refetch.
@@ -39,7 +44,7 @@ export const LIBRARY_CONTENT_KEY_COUNT = LIBRARY_CONTENT_KEYS.length;
  * Silent (no toast). Mounted once at the App shell. */
 // The backend emits one `library:changed` SSE message per FINISHED import
 // job, so an inbox drain of N albums used to fire N full invalidation rounds
-// back-to-back — each one refetching all 11 query families against a server
+// back-to-back — each one refetching every query family against a server
 // cache the previous round had only just invalidated. Coalesce a burst into
 // one round: wait for a quiet gap (FLUSH_AFTER_MS) after the last message,
 // but never let a continuous stream starve real-world listeners past

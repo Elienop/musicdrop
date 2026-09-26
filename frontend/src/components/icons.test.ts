@@ -47,6 +47,7 @@ const CONCEPTS = [
   "NotFound",
   "Resolved",
   "Missing",
+  "Folder",
   // Actions
   "Add",
   "Remove",
@@ -72,6 +73,7 @@ const CONCEPTS = [
   "MoveUp",
   "MoveDown",
   "SignOut",
+  "BrowseFolders",
 ] as const satisfies readonly (keyof typeof icons)[];
 
 // The module's two non-glyph value exports: the weight rule's provider and the

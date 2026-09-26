@@ -24,6 +24,7 @@ from beets.exceptions import UserError
 from beets.library import Library
 from beets.plugins import BeetsPlugin
 
+from app.beets.import_operation import loaded_file_operation
 from app.beets.library import LibraryHandle, close_library
 from app.beets.store_layout import StoreLayoutError, effective_config_paths
 
@@ -200,9 +201,10 @@ def _write_starter_config(beets_dir: Path, *, container_music_default: bool) -> 
         return
     text = (Path(__file__).parent / "config.starter.yaml").read_text(encoding="utf-8")
     if container_music_default:
-        # In the Docker image the music share is mounted at /music; the
-        # dev-relative ../music default would point inside the volume.
-        text = text.replace("directory: ../music", "directory: /music", 1)
+        # In the Docker image the library sits in the one /media mount it shares
+        # with the downloads (README "One mount for music and downloads"); the
+        # dev-relative ../music default would point inside the /data volume.
+        text = text.replace("directory: ../music", "directory: /media/music", 1)
     cfg_path.write_text(text, encoding="utf-8")
     operator_logger.info("Copied starter config to %s", cfg_path)
 
@@ -290,6 +292,7 @@ def open_beets(read: BeetsConfigRead) -> LibraryHandle:
         config_path=read.config_path,
         loaded_at=datetime.now(UTC),
         file_mtime_at_load=read.file_mtime_at_load,
+        file_operation=loaded_file_operation(),
     )
 
 

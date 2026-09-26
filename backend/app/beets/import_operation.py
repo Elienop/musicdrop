@@ -13,17 +13,38 @@ removes the originals (``importer/tasks.py:527-534``), which is a move.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal
+from typing import Final, Literal
 
+import confuse
 from beets import config
 
-FileOperation = Literal["move", "copy", "link", "hardlink", "reflink", "reflink_auto", "in_place"]
+from app.models.config_api import FileOperation
+
+__all__ = [
+    "EVERY_RUN",
+    "FILE_FLAGS",
+    "FileOperation",
+    "ForcedOperation",
+    "configured_file_operation",
+    "file_flags",
+    "file_operation",
+    "forced_file_operation",
+    "loaded_file_operation",
+    "view_file_operation",
+]
+
+#: The part of every import's overlay that decides the operation: no run lets
+#: beets delete the sources (``run_import_worker``'s ``forced``), so a user
+#: ``copy: yes`` + ``delete: yes`` copies in-app where beets alone would move.
+EVERY_RUN: Final[Mapping[str, object]] = {"delete": False}
+
 #: The operations a caller may FORCE for one run. No ``hardlink``: keep-downloads
 #: is one global switch written into beets' own ``import:`` keys, with no
 #: per-import choice (``decisions`` #53).
 ForcedOperation = Literal["move", "copy", "in_place"]
 
-_FILE_FLAGS = ("move", "copy", "link", "hardlink", "reflink")
+#: beets' five filing flags, the keys ``set_config`` makes exclusive.
+FILE_FLAGS: Final = ("move", "copy", "link", "hardlink", "reflink")
 
 
 def file_operation(
@@ -64,7 +85,15 @@ def forced_file_operation(forced: Mapping[str, object]) -> FileOperation:
     Truthiness, not ``get(bool)``: ``set_config`` tests each flag with ``if``,
     and ``delete: 1`` must not raise where beets would accept it.
     """
-    imp = config["import"]
+    return view_file_operation(config["import"], forced)
+
+
+def view_file_operation(imp: confuse.ConfigView, forced: Mapping[str, object]) -> FileOperation:
+    """:func:`forced_file_operation` of any config's ``import`` view.
+
+    For a config that is not the live one: the text a write is about to put on
+    disk, with its includes merged (``app/beets/config_editor.py``).
+    """
 
     def flag(name: str) -> object:
         return forced[name] if name in forced else imp[name].get()
@@ -91,6 +120,22 @@ def configured_file_operation() -> FileOperation:
     return forced_file_operation({})
 
 
+def loaded_file_operation() -> FileOperation | None:
+    """What a default import runs under the live config: its caller names no operation.
+
+    :data:`EVERY_RUN` over the config, as every run has it; asked once per load
+    (boot and Apply), before any import can overlay the live config.
+
+    ``None`` when ``import:`` is not a mapping (``import:`` left empty, say):
+    beets loads such a file and fails only when an import reads the key, so
+    the load must not fail here either.
+    """
+    try:
+        return forced_file_operation(EVERY_RUN)
+    except confuse.ConfigError:
+        return None
+
+
 def file_flags(op: ForcedOperation) -> dict[str, bool]:
     """The five file flags with only ``op`` on, plus ``delete`` off.
 
@@ -98,4 +143,4 @@ def file_flags(op: ForcedOperation) -> dict[str, bool]:
     ``in_place`` turns all five off. ``delete`` is off in every case: a copy
     with ``delete`` removes the download.
     """
-    return {**{flag: flag == op for flag in _FILE_FLAGS}, "delete": False}
+    return {**{flag: flag == op for flag in FILE_FLAGS}, "delete": False}

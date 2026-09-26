@@ -735,9 +735,10 @@ export interface paths {
          *     ``active`` is ``True`` exactly while the registry's single slot is in
          *     ``_ACTIVE_PHASES`` (``POST /api/config/apply`` 409s in that case); ``job_id``
          *     carries the resume target (``None`` when idle). The probe also surfaces the
-         *     active import's ``origin`` (manual/inbox) and set-aside ``needs_review_count``
-         *     so the Resume cue can flag an unattended inbox import. All come from one
-         *     ``active_status()`` call so they can never disagree.
+         *     active import's ``origin`` (manual/inbox), which names an inbox run in the
+         *     Resume banner, and set-aside ``needs_review_count``, which the nav Review
+         *     badge reads. All come from one ``active_status()`` call so they can never
+         *     disagree.
          */
         get: operations["get_active_import_api_imports_active_get"];
         put?: never;
@@ -895,6 +896,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Folders
+         * @description The folders directly inside ``path``, for Add from folder's browser.
+         *
+         *     No ``path`` opens ``/media`` when it is a folder, else ``/``. A ``path`` that
+         *     is not a folder lists its nearest existing parent. ``path`` is the display
+         *     form a listing handed out, mapped back the way ``POST /api/import`` maps it.
+         */
+        get: operations["list_folders_api_folders_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/config": {
         parameters: {
             query?: never;
@@ -1027,6 +1052,30 @@ export interface paths {
          * @description Reload beets in-process after a Save, swapping ``app.state.beets_library``.
          */
         post: operations["apply_config_api_config_apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/import-operation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Import Operation
+         * @description What imports do with the files, as loaded at boot or by the last Apply.
+         */
+        get: operations["get_import_operation_api_config_import_operation_get"];
+        put?: never;
+        /**
+         * Set Import Operation
+         * @description Keep downloads: write hardlink (on) or move (off) into config.yaml, then reload beets.
+         */
+        post: operations["set_import_operation_api_config_import_operation_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1709,6 +1758,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Sources
+         * @description The Folder sources, in the order added. Never slskd.
+         */
+        get: operations["list_sources_api_sources_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sources/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Folder Source
+         * @description Add a Folder source when a start on its folder would not be refused.
+         */
+        post: operations["add_folder_source_api_sources_folders_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sources/folders/{source_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Folder Source
+         * @description Remove a Folder source. The folder on disk is not touched.
+         *
+         *     Under the same cap as list and add, since it reads the same file.
+         */
+        delete: operations["remove_folder_source_api_sources_folders__source_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/acquisition/status": {
         parameters: {
             query?: never;
@@ -1737,12 +1848,12 @@ export interface paths {
         put?: never;
         /**
          * Review Inbox
-         * @description Start an attended, move-mode import of the SETTLED inbox folders.
+         * @description Start an attended import of the SETTLED inbox folders, with beets' file operation.
          *
-         *     One-click review of the set-aside backlog from the slskd panel: no path is
-         *     typed and the absolute inbox path never leaves the server. Strong matches
-         *     auto-apply (and move out of the inbox); uncertain ones park for review in the
-         *     normal candidate-review screen. Nothing to import is a no-op
+         *     **Review all** on the Review page, over "Not imported yet": no path is
+         *     typed; the server resolves slskd's folder itself. Strong matches
+         *     auto-apply; uncertain ones park for review in the normal candidate-review
+         *     screen. Nothing to import is a no-op
          *     (``started=False``), never an error — and the shared import-slot gate refuses
          *     (409) while another beets mutation or backfill owns the slot.
          *
@@ -1769,10 +1880,11 @@ export interface paths {
         };
         /**
          * List Inbox Items
-         * @description The inbox backlog — top-level folders awaiting review, source-agnostic.
+         * @description The "Not imported yet" list: slskd's top-level folders, minus those in review.
          *
-         *     Read-only + never 500: a missing/empty inbox (or the lifespan-less test
-         *     client, which has no ``inbox_dir``) yields an empty listing.
+         *     Read-only. A missing/empty inbox (or the lifespan-less test client, which
+         *     has no ``inbox_dir``) yields an empty listing; a bank that cannot be read
+         *     answers 500, as ``GET /api/bank`` does.
          */
         get: operations["list_inbox_items_api_acquisition_inbox_items_get"];
         put?: never;
@@ -1794,7 +1906,7 @@ export interface paths {
         put?: never;
         /**
          * Import Inbox Item
-         * @description Attended move-import of ONE inbox folder (the per-item Review action).
+         * @description Attended import of ONE inbox folder, the per-item Review, with beets' file operation.
          *
          *     Takes the folder ``name`` (not a path) and re-roots it under the inbox, so a
          *     client value cannot escape: ``contain(strict=True)`` rejects ``../``, absolute
@@ -3341,6 +3453,56 @@ export interface components {
             stopped: boolean;
         };
         /**
+         * FolderEntry
+         * @description One folder directly inside the listed one.
+         *
+         *     ``badge`` is ``library`` for the music library and ``musicdrop`` for a
+         *     folder that is, holds or sits inside one of MusicDrop's own. It only informs:
+         *     every folder can still be opened.
+         */
+        FolderEntry: {
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+            /** Badge */
+            badge: ("library" | "musicdrop") | null;
+        };
+        /**
+         * FolderListing
+         * @description The folders directly inside ``path``, sorted ignoring case.
+         *
+         *     At most 500 are listed; ``total`` counts them all. Folders an import skips
+         *     (beets' ``ignore`` and ``ignore_hidden``) are left out. ``parent`` is null at
+         *     ``/``. ``refusal`` is the sentence an import of ``path`` would be refused
+         *     with, or null.
+         */
+        FolderListing: {
+            /** Path */
+            path: string;
+            /** Parent */
+            parent: string | null;
+            /** Folders */
+            folders: components["schemas"]["FolderEntry"][];
+            /** Total */
+            total: number;
+            /** Refusal */
+            refusal: string | null;
+        };
+        /**
+         * FolderSourceCreate
+         * @description Body of ``POST /api/sources/folders``. Both fields are trimmed.
+         *
+         *     ``folder`` is a server folder, taken back the way ``POST /api/import`` takes
+         *     its ``path``.
+         */
+        FolderSourceCreate: {
+            /** Name */
+            name: string;
+            /** Folder */
+            folder: string;
+        };
+        /**
          * GroupDecision
          * @description One group's keep/remove decision in a batch resolve.
          *
@@ -3532,6 +3694,17 @@ export interface components {
             aborted: boolean;
         };
         /**
+         * ImportOperation
+         * @description What imports do with the files, as loaded at boot or by the last Apply.
+         */
+        ImportOperation: {
+            /**
+             * Operation
+             * @enum {string}
+             */
+            operation: "move" | "copy" | "link" | "hardlink" | "reflink" | "reflink_auto" | "in_place";
+        };
+        /**
          * ImportOptions
          * @description Per-import overrides for one import request.
          */
@@ -3618,7 +3791,7 @@ export interface components {
         };
         /**
          * InboxItem
-         * @description One top-level inbox folder awaiting review (a backlog row).
+         * @description One top-level folder in slskd's folder that no run has imported yet.
          *
          *     ``name`` is the immediate inbox child dir (also the import target id).
          *     ``outcome`` is best-effort: ``set_aside``/``failed`` iff a ledger entry at or
@@ -4769,7 +4942,7 @@ export interface components {
         };
         /**
          * ReviewInboxResponse
-         * @description Result of ``POST /api/acquisition/review-inbox`` (the slskd-panel review).
+         * @description Result of ``POST /api/acquisition/review-inbox`` (the Review page's Review all).
          *
          *     ``started`` is True iff an attended import of the inbox was kicked off, with
          *     ``job_id`` the running job to navigate to. An empty inbox is a no-op
@@ -4856,6 +5029,19 @@ export interface components {
             duration_seconds: number | null;
         };
         /**
+         * SetImportOperation
+         * @description Keep downloads on (beets hardlinks) or off (beets moves), then reload beets.
+         *
+         *     ``base_sha256`` is ``GET /api/config``'s ``sha256``: a file changed since
+         *     then is refused, as a Save is.
+         */
+        SetImportOperation: {
+            /** Keep Downloads */
+            keep_downloads: boolean;
+            /** Base Sha256 */
+            base_sha256: string;
+        };
+        /**
          * SetupRequest
          * @description The one field ``POST /api/auth/setup`` takes, on first run only.
          *
@@ -4899,10 +5085,28 @@ export interface components {
          *     ``has_token`` / ``has_webhook_secret`` let the panel show a "saved — enter to
          *     replace" placeholder for each write-only secret without ever exposing the
          *     value.
+         *
+         *     ``downloads_prefix`` is "Path in slskd": slskd's download folder as slskd
+         *     sees it. A webhook folder inside it, by whole folder names, is read under
+         *     slskd's folder as MusicDrop sees it; empty means both see the same path. A
+         *     folder outside it is refused, not re-rooted.
+         *
+         *     ``last_download_missed`` is true when the last slskd webhook that reached the
+         *     mapping was refused because its folder did not map into slskd's folder, and
+         *     false once one maps. Other event types, and deliveries while auto-import is
+         *     off, do not count. It lives in memory: false after a restart until the next
+         *     miss.
+         *
+         *     ``folder`` is slskd's folder as MusicDrop sees it (``MUSICDROP_INBOX_DIR``),
+         *     read-only, and ``folder_exists`` is whether it is a folder right now.
          */
         SlskdSettings: {
             /** Base Url */
             base_url: string;
+            /** Folder */
+            folder: string;
+            /** Folder Exists */
+            folder_exists: boolean;
             /** Downloads Prefix */
             downloads_prefix: string;
             /** Auto Import */
@@ -4911,6 +5115,8 @@ export interface components {
             has_token: boolean;
             /** Has Webhook Secret */
             has_webhook_secret: boolean;
+            /** Last Download Missed */
+            last_download_missed: boolean;
         };
         /**
          * SlskdSettingsUpdate
@@ -4941,6 +5147,29 @@ export interface components {
             remoteDirectoryName?: string | null;
             /** Username */
             username?: string | null;
+        };
+        /**
+         * SourceList
+         * @description Every Folder source, in the order added.
+         */
+        SourceList: {
+            /** Sources */
+            sources: components["schemas"]["SourceSummary"][];
+        };
+        /**
+         * SourceSummary
+         * @description One Folder source. ``folder`` is the path as it was added (display form);
+         *     ``exists`` is whether it is a folder right now.
+         */
+        SourceSummary: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Folder */
+            folder: string;
+            /** Exists */
+            exists: boolean;
         };
         /**
          * StartImportRequest
@@ -7954,7 +8183,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The source folder does not exist or cannot be read, or a copy-mode import was asked for a folder inside the music library, or the request failed validation. */
+            /** @description The source folder does not exist or cannot be read, or a copy-mode import was asked for a folder inside the music library, or the folder is or holds the library or MusicDrop's own data, or it is or holds slskd's whole folder, or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -8520,6 +8749,64 @@ export interface operations {
             };
         };
     };
+    list_folders_api_folders_get: {
+        parameters: {
+            query?: {
+                path?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FolderListing"];
+                };
+            };
+            /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Two folders display under the same name. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The folder cannot be read, or the request failed validation. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_config_api_config_get: {
         parameters: {
             query?: never;
@@ -8987,6 +9274,183 @@ export interface operations {
                 };
             };
             /** @description The rebuild failed and putting the old config back failed too; fix the error the recovery line quotes and Apply again. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredErrorDetail"];
+                };
+            };
+        };
+    };
+    get_import_operation_api_config_import_operation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportOperation"];
+                };
+            };
+            /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description beets cannot read import: in the loaded config (not a mapping). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+        };
+    };
+    set_import_operation_api_config_import_operation_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetImportOperation"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BeetsConfigSnapshot"];
+                };
+            };
+            /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A library job is running, config.yaml has saved edits Apply has not loaded, or the file changed since it was read (the Save's conflict body). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"] | {
+                        /**
+                         * ConfigSaveConflict
+                         * @description What the config editor sends back when its compare-and-swap loses.
+                         *
+                         *     ``POST /api/config/save`` and ``POST /api/config/naming/save`` hash the file
+                         *     on disk and compare it with the ``base_sha256`` the editor loaded from
+                         *     (``app/beets/config_editor.py``). A mismatch means someone else wrote
+                         *     ``config.yaml`` in between, so the save is refused with 409 and the client is
+                         *     handed everything it needs to recover WITHOUT a second round trip:
+                         *     ``current_yaml_text`` is the file as it now stands and ``current_sha256`` is
+                         *     the CAS token to resubmit with if the user chooses to overwrite anyway.
+                         *
+                         *     ``detail`` is the human sentence ("File changed on disk"). Unlike
+                         *     :class:`OperationFailure`, the inner key really IS named ``detail`` here -
+                         *     that is what the raise sends, and this model documents the wire, not the
+                         *     naming we would pick today.
+                         */
+                        detail: {
+                            /** Detail */
+                            detail: string;
+                            /** Current Yaml Text */
+                            current_yaml_text: string;
+                            /** Current Sha256 */
+                            current_sha256: string;
+                        };
+                    };
+                };
+            };
+            /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description import: in config.yaml is not a plain mapping, an include decides the operation, or config.yaml cannot be read, written or checked, and nothing was written; or Apply's reload refused the written file, with its recovery line. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"] | {
+                        /**
+                         * OperationFailure
+                         * @description What a long-running library op failed at, and what the user can do next.
+                         *
+                         *     ``message`` names the cause (it embeds the underlying exception's text);
+                         *     ``recovery`` says what state the library is in and what to do about it.
+                         *     ``message`` rather than ``detail`` for the inner key on purpose - Starlette
+                         *     already wraps the payload in an outer ``detail``, so an inner ``detail``
+                         *     would render the confusing ``{"detail": {"detail": ...}}``.
+                         */
+                        detail: {
+                            /** Message */
+                            message: string;
+                            /** Recovery */
+                            recovery: string;
+                        };
+                    } | components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The reload failed and putting the old config back failed too, as Apply's 500. */
             500: {
                 headers: {
                     [name: string]: unknown;
@@ -11810,6 +12274,196 @@ export interface operations {
             };
         };
     };
+    list_sources_api_sources_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceList"];
+                };
+            };
+            /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+        };
+    };
+    add_folder_source_api_sources_folders_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FolderSourceCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceSummary"];
+                };
+            };
+            /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Two folders display under the same name. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The folder does not exist, is not a folder or cannot be read, or it is or holds the library or MusicDrop's own data, or it is or holds slskd's whole folder, or the request failed validation. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The store layout is refused, so no import could start. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+        };
+    };
+    remove_folder_source_api_sources_folders__source_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description No Folder source has that id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_acquisition_status_api_acquisition_status_get: {
         parameters: {
             query?: never;
@@ -11902,7 +12556,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Every folder handed over no longer exists, or cannot be read. */
+            /** @description Every folder handed over no longer exists, or cannot be read, or one is or holds the library, MusicDrop's own data or slskd's whole folder. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -12036,7 +12690,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The folder no longer exists or cannot be read, or the request failed validation. */
+            /** @description The folder no longer exists or cannot be read, or it is or holds the library, MusicDrop's own data or slskd's whole folder, or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;

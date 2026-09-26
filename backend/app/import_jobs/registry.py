@@ -15,11 +15,14 @@ import logging
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.beets.import_mapping import embedded_art
-from app.beets.import_session import ImportBridge
+from app.beets.import_session import ImportBridge, album_folder_under_source, source_as_walked
+from app.beets.store_layout import SourceRows, source_rows
+from app.config import Settings
 from app.events.broker import EventBroker
 from app.import_jobs.runner import BeetsImportRunner, ImportRunner
 from app.models.bank import BankApplyDirective
@@ -104,13 +107,19 @@ class ImportJob:
     phase: ImportPhase = ImportPhase.scanning
     albums: dict[int, _FeedAlbum] = field(default_factory=dict)
     error: str | None = None
-    # Where this import came from: "manual" (the web Start flow) or "inbox" (the
-    # unattended acquisition seam). Surfaced on the job state + the active probe.
+    # Where this import came from: "manual" (``POST /api/import``: Add from folder
+    # and its re-runs), "inbox" (slskd's folder: the drain, Review all, or a row's
+    # Review), "sweep" or "bank_apply".
+    # Surfaced on the job state + the active probe.
     origin: ImportOrigin = "manual"
     # The single folder this job was started with, or None when it was started
     # with several (beets takes each as its own toppath). Surfaced on the job
     # state so a reloaded Import page can re-post the same folder.
     path: str | None = None
+    # Every folder this job was started with, as the caller passed them. What
+    # a finished run records as imported is chosen from these
+    # (:meth:`ImportJobRegistry._fully_landed_sources`).
+    sources: tuple[str, ...] = ()
     # Sweep-origin jobs count instead of accumulating feed rows: a whole-library
     # sweep would otherwise hold thousands of _FeedAlbum dicts. None for
     # manual/inbox jobs (their feed is untouched).
@@ -180,12 +189,25 @@ class ImportJobRegistry:
         self._trash_origins_dir: Path | None = None
         self._bank_dir: Path | None = None
         self._playlists_dir: Path | None = None
+        self._settings: Settings | None = None
+        self._beets_dir: Path | None = None
         self._refusal: str | None = None
         self._job: ImportJob | None = None
         self._lock = threading.Lock()
         self._broker: EventBroker | None = None
+        self._recorder: Callable[[list[str]], None] | None = None
 
     # ----- wiring -----
+
+    def attach_import_recorder(self, recorder: Callable[[list[str]], None] | None) -> None:
+        """Attach what a finished run hands the folders it fully landed.
+
+        Wired at lifespan to the acquisition ledger, which keeps the ones inside
+        slskd's folder (decisions #77: remember and hide). Called on the worker
+        thread, outside the registry lock. None in tests (no lifespan) = nothing
+        is recorded.
+        """
+        self._recorder = recorder
 
     def attach_event_broker(self, broker: EventBroker | None) -> None:
         """Attach the SSE broker so a finished import notifies open tabs.
@@ -211,9 +233,12 @@ class ImportJobRegistry:
         playlists_dir: Path | None = None,
         trash_origins_dir: Path | None = None,
         refusal: str | None = None,
+        *,
+        settings: Settings | None,
+        beets_dir: Path | None,
     ) -> None:
         """Provide the beets Library + Trash dir + bank dir + playlists dir the
-        production runner builds from (bank_dir feeds sweep-mode sessions;
+        production runner builds from (bank_dir feeds unattended sessions;
         playlists_dir feeds the post-Replace `.m3u8` re-export).
 
         ``trash_origins_dir`` is keyword-last rather than beside ``trash_dir``
@@ -221,13 +246,57 @@ class ImportJobRegistry:
         wired from the same resolve as ``trash_dir`` and the two are used as a
         pair. ``refusal`` is Apply's backstop sentence: measured, an import
         started after that 422 was accepted and landed its files in the beets
-        data dir, the root the Apply had just refused."""
+        data dir, the root the Apply had just refused.
+
+        ``settings`` and ``beets_dir`` are what an import start lists MusicDrop's
+        own folders from, to refuse a source that is or holds one. Required, so a
+        caller cannot turn that refusal off by leaving them out; ``None`` is for
+        a test that means to."""
         self._lib = lib
         self._trash_dir = trash_dir
         self._trash_origins_dir = trash_origins_dir
         self._bank_dir = bank_dir
         self._playlists_dir = playlists_dir
+        self._settings = settings
+        self._beets_dir = beets_dir
         self._refusal = refusal
+
+    def raise_if_refused(self) -> None:
+        """Raise ``LibraryRefusedError`` with Apply's sentence while it stands.
+
+        The first thing ``start`` asks, and what adding a Folder source asks
+        first, so both answer alike: with the layout refused ``source_rows`` is
+        ``None`` and no other check can say where a folder sits.
+        """
+        if self._refusal is not None:
+            raise LibraryRefusedError(self._refusal)
+
+    def source_rows(self) -> SourceRows | None:
+        """What an import start refuses a folder from, built off the attached layout.
+
+        The folder browser's refusal line and badges read this, so they name the
+        same folders the start refuses, including after an Apply re-attaches.
+        ``None`` before ``attach_library``, when a test attached no layout, or
+        after an Apply loaded a refused store layout (it attaches no Trash
+        folders): the browser then shows no badges and no refusal line, while
+        ``POST /api/import`` and adding a Folder source answer 503 with Apply's
+        sentence (``raise_if_refused``). Blocking: it stats each row's chain.
+        """
+        if (
+            self._lib is None
+            or self._settings is None
+            or self._beets_dir is None
+            or self._trash_dir is None
+            or self._trash_origins_dir is None
+        ):
+            return None
+        return source_rows(
+            settings=self._settings,
+            lib=self._lib,
+            beets_dir=self._beets_dir,
+            trash_dir=self._trash_dir,
+            origins_dir=self._trash_origins_dir,
+        )
 
     @property
     def library(self) -> object | None:
@@ -247,6 +316,8 @@ class ImportJobRegistry:
             self._trash_origins_dir,
             self._bank_dir,
             self._playlists_dir,
+            settings=self._settings,
+            beets_dir=self._beets_dir,
         )
 
     # ----- lifecycle -----
@@ -291,8 +362,7 @@ class ImportJobRegistry:
         bank apply runner's translated decision, threaded to the session so
         the one-folder run answers every hook from it (None everywhere else).
         """
-        if self._refusal is not None:
-            raise LibraryRefusedError(self._refusal)
+        self.raise_if_refused()
         paths = [source] if isinstance(source, str) else list(source)
         runner = self._resolve_runner()
         forgiven = runner.validate(paths, options)
@@ -322,6 +392,7 @@ class ImportJobRegistry:
                 bridge=ImportBridge(),
                 origin=origin,
                 path=paths[0] if len(paths) == 1 else None,
+                sources=tuple(paths),
                 sweep=SweepStatus() if origin == "sweep" else None,
                 directive_astracks=directive is not None and directive.action == "astracks",
             )
@@ -367,6 +438,7 @@ class ImportJobRegistry:
 
     def _on_finish(self, job_id: str) -> None:
         finished = False
+        landed: list[str] = []
         with self._lock:
             if (
                 self._job is not None
@@ -377,11 +449,66 @@ class ImportJobRegistry:
                 self._job.stop_clock()
                 self._job.phase = ImportPhase.done
                 finished = True
+                landed = self._fully_landed_sources(self._job)
+        # Recorded BEFORE the event below: an open Review page refetches "Not
+        # imported yet" on it (``inbox-items`` is in the frontend's
+        # ``LIBRARY_CONTENT_KEYS``) and must already see the folder gone.
+        if landed:
+            self._record_imported(landed)
         # Emit OUTSIDE the lock: a finished import (manual / inbox / bank-apply
         # all route through here) tells every open tab to refetch. publish is
         # thread-safe (this runs on the worker thread).
         if finished:
             self._notify_changed()
+
+    @staticmethod
+    def _fully_landed_sources(job: ImportJob) -> list[str]:
+        """The start folders, as beets walked them, whose every album in the feed
+        landed (caller holds the lock).
+
+        Only for a run that finished ``done`` and was not cut short: a stop that
+        aborted may have ended the run before a folder's next album was reached,
+        and the feed cannot tell that folder from a finished one, so nothing is
+        recorded (``job_aborted``'s own flag). A folder with no album in the
+        feed has nothing to judge and records nothing, which is also why a sweep
+        records nothing: it keeps no per-album feed. "Landed" is the verdict
+        ``state()`` counts ``applied`` with.
+        """
+        if job.bridge.abort_raised():
+            return []
+        landed = ImportJobRegistry._landing_map(job, terminal=True)
+        fully_landed: list[str] = []
+        for source in job.sources:
+            verdicts = [
+                landed[index]
+                for index, row in job.albums.items()
+                if album_folder_under_source(row.outcome.folder, source)
+            ]
+            if verdicts and all(verdicts):
+                # The folder beets read, not the spelling typed: through a
+                # link, ``<a>/link/../Y`` resolves to a folder never imported.
+                fully_landed.append(source_as_walked(source))
+        return fully_landed
+
+    def _record_imported(self, folders: list[str]) -> None:
+        """Hand ``folders`` to the attached recorder; a failed write is logged.
+
+        Worker thread, outside the lock and outside the runner's broad
+        ``except``, so anything raised here would end the thread before the
+        refresh event. A write that fails (``OSError``) or a row the ledger
+        cannot store (``ValueError``: a name that is not valid UTF-8) leaves the
+        folder listed under "Not imported yet", the safe side, so the finished
+        run is not failed for it.
+        """
+        recorder = self._recorder
+        if recorder is None:
+            return
+        try:
+            recorder(folders)
+        except (OSError, ValueError) as exc:
+            operator_logger.warning(
+                "import: could not record the imported folders; they stay listed (%r)", exc
+            )
 
     def _on_error(self, job_id: str, message: str) -> None:
         matched = False
@@ -981,9 +1108,10 @@ class ImportJobRegistry:
 
     def active_status(self) -> ActiveImportStatus:
         """The active-import probe: ``active`` + resume ``job_id`` (invariant:
-        equal), plus the live job's ``origin`` and set-aside count (the FE inbox
-        cue's "N set aside for review"). The count is :meth:`_is_set_aside`, the
-        same predicate ``state()`` uses, so the badge and the page agree.
+        equal), plus the live job's ``origin`` and set-aside count (the nav
+        Review badge, the dashboard's review pointer and the activity row). The
+        count is :meth:`_is_set_aside`, the same predicate ``state()`` uses, so
+        the badge and the page agree.
 
         Drains the active job first so the count tracks the worker's latest
         outcomes; returns the idle ``{active: false}`` shape (with the defaulted

@@ -5,6 +5,7 @@ import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useLibraryJobActive } from "@/api/useLibraryJobActive";
+import { useSlskdSettings } from "@/api/useSlskd";
 import {
   type BeetsConfigSnapshot,
   type ConfigAdvisory,
@@ -17,6 +18,10 @@ import {
   useSaveConfig,
   useValidateConfig,
 } from "@/api/useBeetsConfig";
+import {
+  useImportOperation,
+  useSetImportOperation,
+} from "@/api/useImportOperation";
 import {
   Error as ErrorIcon,
   Info,
@@ -34,6 +39,13 @@ import {
   APPLY_FALLBACK,
   saveFailureDetail,
 } from "@/pages/settings/configFailureText";
+import {
+  ImportOperationSection,
+  importLoadFailure,
+  importSwitchFailure,
+  importSwitchLocked,
+  importSwitchReason,
+} from "@/pages/settings/ImportOperationSection";
 import { SettingsConflict } from "@/pages/settings/SettingsConflict";
 import {
   READ_ONLY_EXTENSION,
@@ -99,7 +111,8 @@ function parseConflictBody(err: unknown): ConflictState | null {
  * typing during the round-trip. A draft outranks `apply_pending` (owner
  * ruling 2026-09-23, "Edit works while pending"): once it differs from the
  * file the page is in its edit state, so Save is on and Apply is off until
- * the draft is Saved or discarded.
+ * the draft is Saved or discarded. `applying` is an Apply or a Keep downloads
+ * flip: both reload beets.
  */
 function derivePageState(
   applying: boolean,
@@ -137,6 +150,13 @@ export function SettingsBeetsPage() {
   const save = useSaveConfig();
   const applyMutation = useApplyConfig();
   const validate = useValidateConfig();
+  // The Keep downloads switch. The page owns it: a flip writes config.yaml and
+  // reloads beets in one request, so while it runs the page is `applying`.
+  const operation = useImportOperation();
+  const flip = useSetImportOperation();
+  // The link and in-place notes add a slskd sentence only while its
+  // auto-import is on, so a user without slskd never reads about it.
+  const slskd = useSlskdSettings();
   // Any library job (import / lyrics / artist-art / reorganize) blocks Apply
   // server-side; mirror that so Apply disables instead of firing into a 409.
   const job = useLibraryJobActive();
@@ -257,16 +277,103 @@ export function SettingsBeetsPage() {
     [],
   );
 
-  if (isPending) return <Loader />;
-  if (isError) return <ErrorBanner err={error} />;
-  if (!data) return null;
-
+  // Derived before the early returns: the Import section renders above the
+  // config's loader and its error banner too. A flip reloads beets as Apply
+  // does, so it is `applying`: the "Reloading beets…" line shows and Edit,
+  // Save and Apply turn off.
   const pageState = derivePageState(
-    applyMutation.isPending,
+    applyMutation.isPending || flip.isPending,
     save.isPending,
-    data.apply_pending,
+    data?.apply_pending ?? false,
     dirty,
   );
+  const switchGate = {
+    reloading: pageState === "applying",
+    job: job.active ? job.label : null,
+    editing: pageState === "dirty" || pageState === "saving",
+    applyPending: pageState === "apply_pending",
+    configUnreadable: isError,
+  };
+  const switchReason = importSwitchReason(switchGate);
+  const switchLocked = importSwitchLocked(switchGate);
+
+  // A failed flip's sentence outranks the reason line: a flip that fails after
+  // writing the file locks the switch ("Apply saved changes first.") on the
+  // very render the failure arrives, and that lock must not hide why. It
+  // clears on the user's next action (Edit, Apply, a press on the switch; a
+  // Save needs Edit first) or when a job takes the library, whose reason line
+  // then speaks.
+  const flipFailed = flip.isError;
+  const resetFlip = flip.reset;
+  const jobHolds = switchGate.job !== null;
+  useEffect(() => {
+    if (jobHolds && flipFailed) resetFlip();
+  }, [jobHolds, flipFailed, resetFlip]);
+
+  function handleKeepDownloads(on: boolean) {
+    // The switch is aria-disabled, not disabled, so a locked press lands here.
+    // It is the user's next action: the failure gives way to the reason line.
+    // Never reset a running flip: that would drop its answer.
+    if (!data || switchLocked) {
+      if (flipFailed) resetFlip();
+      return;
+    }
+    // The latest action owns the one alert, as a Save ends an Apply's.
+    applyMutation.reset();
+    // As Apply: the editor takes no edits while beets reloads.
+    editorRef.current?.view?.dispatch({
+      effects: editableCompartment.reconfigure(READ_ONLY_EXTENSION),
+    });
+    flip.mutate(
+      { keep_downloads: on, base_sha256: data.sha256 },
+      {
+        // A job this page has not seen may hold the library; ask the probes
+        // again so the reason line names it, as Apply's 409 does.
+        onError: (err) => {
+          if (err.status === 409) job.refetch();
+        },
+      },
+    );
+  }
+
+  const importSection = (
+    <ImportOperationSection
+      operation={operation.data}
+      slskdAutoImport={slskd.data?.auto_import === true}
+      loadFailure={
+        operation.isError ? importLoadFailure(operation.error) : null
+      }
+      ready={operation.data !== undefined && !isPending}
+      // While a flip runs the thumb sits at its target.
+      checked={
+        flip.isPending
+          ? flip.variables.keep_downloads
+          : operation.data === "hardlink"
+      }
+      locked={switchLocked}
+      reason={switchReason}
+      failure={flip.isError ? importSwitchFailure(flip.error) : null}
+      onCheckedChange={handleKeepDownloads}
+    />
+  );
+
+  if (isPending) {
+    return (
+      <div className="flex flex-col gap-8">
+        {importSection}
+        <Loader />
+      </div>
+    );
+  }
+  if (isError) {
+    return (
+      <div className="flex flex-col gap-8">
+        {importSection}
+        <ErrorBanner err={error} />
+      </div>
+    );
+  }
+  if (!data) return null;
 
   async function asyncSource(text: string): Promise<Diagnostic[]> {
     try {
@@ -347,8 +454,9 @@ export function SettingsBeetsPage() {
     // error mutation keeps its error state until reset, so without this the
     // old alert would resurface the moment the doc is dirty again. An Apply
     // refusal stays: it is true of the file until a Save or a new file
-    // version ends it.
+    // version ends it. A flip's failure ends too: Edit is the next action.
     save.reset();
+    flip.reset();
     const view = editorRef.current?.view;
     if (view) {
       view.dispatch({
@@ -396,6 +504,8 @@ export function SettingsBeetsPage() {
     editorRef.current?.view?.dispatch({
       effects: editableCompartment.reconfigure(READ_ONLY_EXTENSION),
     });
+    // The latest action owns the one alert: Apply ends a flip's failure.
+    flip.reset();
     // A 409 means a job this page has not seen holds the library. Ask the
     // probes again so the "Apply paused" line speaks for it, and goes when
     // the job ends.
@@ -439,8 +549,9 @@ export function SettingsBeetsPage() {
   }
 
   function handleConflictOverwrite() {
-    // No Save while an Apply is in flight, from this button either.
-    if (!conflict || !data || applyMutation.isPending) return;
+    // No Save while beets reloads (an Apply or a Keep downloads flip), from
+    // this button either.
+    if (!conflict || !data || pageState === "applying") return;
     const text = localText ?? data.yaml_text;
     save.mutate(
       {
@@ -479,6 +590,7 @@ export function SettingsBeetsPage() {
 
   return (
     <div className="flex flex-col gap-8">
+      {importSection}
       <section className="flex flex-col gap-4" aria-label="Beets configuration">
         <header className="flex flex-col gap-1">
           <SectionLabel>Beets configuration</SectionLabel>
@@ -554,7 +666,9 @@ export function SettingsBeetsPage() {
             onClick={handleApply}
             disabled={pageState !== "apply_pending" || job.active}
           >
-            {pageState === "applying" ? (
+            {/* Its own flag, not `applying`: a Keep downloads flip is
+                `applying` too, and this button did not start it. */}
+            {applyMutation.isPending ? (
               <>
                 <Spinner className="animate-spin" aria-hidden="true" />
                 Applying&hellip;

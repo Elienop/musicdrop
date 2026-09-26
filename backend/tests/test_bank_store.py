@@ -22,6 +22,7 @@ from app.models.import_models import (
     AlbumChange,
     Candidate,
     CandidateOption,
+    DuplicateAction,
     DuplicatePrompt,
     IncomingAlbum,
     ParkedAlbum,
@@ -412,6 +413,45 @@ def test_upsert_replaces_changed_fingerprint(tmp_path: Path) -> None:
     assert replaced.artist == "New"
     assert replaced.decided is None
     assert replaced.resolved_at is None
+
+
+def test_a_rebank_forgets_the_album_the_previous_apply_landed(tmp_path: Path) -> None:
+    """A re-bank is a fresh decision, so it carries no outcome of the last one.
+
+    slskd re-downloads into a folder whose row is ``done`` with album 42; the
+    drain banks the collision; the operator keeps the existing copy. That
+    ``done`` write passes ``album_id=None``, which ``set_status`` reads as
+    "leave it", so a kept 42 made Review say the album was imported although
+    nothing was (security seat's probe P1).
+    """
+    bank = _bank(tmp_path)
+    first = store.upsert_by_folder(
+        bank, folder="/inbox/X", source="inbox", reason="no_match", fingerprint="f1"
+    )
+    store.decide_item(bank, first.id, BankDecision(action="asis"))
+    assert store.set_status(bank, first.id, "applying", expected="queued") is not None
+    assert store.set_status(bank, first.id, "done", album_id=42) is not None
+
+    rebanked = store.upsert_by_folder(
+        bank,
+        folder="/inbox/X",
+        source="inbox",
+        reason="needs_dup_resolution",
+        fingerprint="f2",
+        duplicate=_dup_prompt(),
+    )
+    assert rebanked.id == first.id
+    assert (rebanked.status, rebanked.album_id) == ("needs_review", None)
+
+    # The rest of the sequence: keep my copy, then the enforced skip_new write.
+    store.decide_item(
+        bank, first.id, BankDecision(action="duplicate", duplicate_action=DuplicateAction.skip_new)
+    )
+    assert store.set_status(bank, first.id, "applying", expected="queued") is not None
+    store.set_status(bank, first.id, "done", error=None, album_id=None, expected="applying")
+    final = store.get_item(bank, first.id)
+    assert final is not None
+    assert (final.status, final.album_id) == ("done", None)
 
 
 def test_upsert_replace_arm_carries_both_payloads(tmp_path: Path) -> None:

@@ -74,6 +74,17 @@ describe("useEventStream", () => {
     expect(bumpSpy).not.toHaveBeenCalled();
   });
 
+  // A finished import records its folders before the event, so an open Review
+  // page must drop a landed folder now: listed, a Review press re-imports it.
+  it("refetches Review's Not imported yet list on a library:changed message", () => {
+    vi.useFakeTimers();
+    const { spy, es } = setup();
+    es().onmessage?.(new MessageEvent("message", { data: '{"type":"library:changed"}' }));
+    vi.advanceTimersByTime(300);
+    const keys = spy.mock.calls.map(([f]) => f?.queryKey);
+    expect(keys).toContainEqual(["inbox-items"]);
+  });
+
   it("invalidates AND bumps the asset version on an art:changed message", () => {
     vi.useFakeTimers();
     const { spy, bumpSpy, es } = setup();

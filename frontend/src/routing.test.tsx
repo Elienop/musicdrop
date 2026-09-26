@@ -28,6 +28,7 @@ import { SettingsIntegrationsPage } from "@/pages/settings/SettingsIntegrationsP
 import { SettingsLayout } from "@/pages/settings/SettingsLayout";
 import { SettingsMetadataPage } from "@/pages/settings/SettingsMetadataPage";
 import { SettingsNamingPage } from "@/pages/settings/SettingsNamingPage";
+import { SettingsSourcesPage } from "@/pages/settings/SettingsSourcesPage";
 import { server } from "@/test/msw-server";
 
 const HEALTH_URL = `${window.location.origin}/api/health`;
@@ -84,6 +85,7 @@ const routes = [
           { path: "beets", element: <SettingsBeetsPage /> },
           { path: "naming", element: <SettingsNamingPage /> },
           { path: "metadata", element: <SettingsMetadataPage /> },
+          { path: "sources", element: <SettingsSourcesPage /> },
           { path: "integrations", element: <SettingsIntegrationsPage /> },
         ],
       },

@@ -2,22 +2,29 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router";
 
 import {
+  IMPORT_OPERATION_LINE,
+  useImportOperation,
+} from "@/api/useImportOperation";
+import {
   type SlskdSettings,
   type SlskdSettingsUpdate,
   useSaveSlskdSettings,
   useSlskdSettings,
   useTestSlskd,
 } from "@/api/useSlskd";
-import { Spinner, Success } from "@/components/icons";
+import { Spinner, Success, Warning } from "@/components/icons";
 import { CopyableSnippet } from "@/components/system/CopyableSnippet";
 import { SettingsSection } from "@/components/system/SettingsSection";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 
 /** The paste-in slskd config that points its completion webhook back at this
  * app. Read-only + copyable — slskd posts to `/api/slskd/webhook` on every
- * finished download, authenticating with the webhook secret set below. */
+ * finished download, authenticating with the webhook secret set below.
+ * `retry.attempts` is slskd's own setting (it tries once by default); it
+ * re-sends a webhook MusicDrop missed while restarting. */
 const WEBHOOK_SNIPPET = `integration:
   webhooks:
     musicdrop:
@@ -26,11 +33,20 @@ const WEBHOOK_SNIPPET = `integration:
         url: http://<musicdrop-host>:3030/api/slskd/webhook  # host must be an IP, or a name listed in MUSICDROP_ALLOWED_HOSTS
         headers:
           - name: X-API-Key
-            value: <your webhook secret>`;
+            value: <your webhook secret>
+      retry:
+        attempts: 10`;
 
-/** Settings → slskd: connect a slskd instance (base URL + write-only API key +
- * the downloads path as slskd sees it), set the shared webhook secret, and flip
- * auto-import so a completed download imports itself. Both secrets are
+/** The auto-import switch's help, and the line under it saying what an import
+ * does with the downloaded files. */
+const AUTO_IMPORT_HELP_ID = "slskd-auto-import-help";
+const FILES_LINE_ID = "slskd-files-help";
+
+/** Settings → Sources → slskd: show slskd's folder (read-only, set by
+ * MUSICDROP_INBOX_DIR), connect a slskd instance (base URL + write-only API
+ * key + Path in slskd, slskd's download folder as slskd sees it), set the
+ * shared webhook secret, and flip auto-import so a completed download imports
+ * itself. Both secrets are
  * write-only — the API returns only `has_token` / `has_webhook_secret`, so each
  * field shows a "saved" placeholder and is sent only when the user types a
  * replacement. */
@@ -50,7 +66,7 @@ export function SlskdPanel() {
     return (
       <Panel>
         <p className="text-destructive text-sm" role="alert">
-          Could not load slskd settings.
+          Couldn’t load slskd settings.
         </p>
       </Panel>
     );
@@ -65,6 +81,11 @@ export function SlskdPanel() {
 function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) {
   const save = useSaveSlskdSettings();
   const test = useTestSlskd();
+  // slskd downloads import with beets' own file operation, as every import
+  // does; Add from folder says it under its path box in the same words.
+  const operation = useImportOperation();
+  const filesLine =
+    operation.data === undefined ? null : IMPORT_OPERATION_LINE[operation.data];
 
   const [baseUrl, setBaseUrl] = useState(initial.base_url);
   const [token, setToken] = useState("");
@@ -156,6 +177,24 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
   return (
     <>
       <div className="flex flex-col gap-4">
+        {/* slskd's inbox, read-only: the environment sets it (#77). Missing
+            only matters to a user whose downloads import themselves, so the
+            badge follows the switch below, as it stands before a Save. */}
+        <dl className="flex flex-col gap-1">
+          <dt className="text-sm font-medium">Folder</dt>
+          <dd className="flex flex-wrap items-center gap-2">
+            <span className="min-w-0 font-mono text-sm wrap-anywhere">
+              {initial.folder}
+            </span>
+            {!initial.folder_exists && autoImport && (
+              <Badge variant="outline">Missing</Badge>
+            )}
+          </dd>
+          <dd className="text-muted-foreground text-xs">
+            Set with <code className="font-mono">MUSICDROP_INBOX_DIR</code>.
+          </dd>
+        </dl>
+
         <div className="flex flex-col gap-1">
           <label htmlFor="slskd-base-url" className="text-sm font-medium">
             Base URL
@@ -195,19 +234,43 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
             htmlFor="slskd-downloads-prefix"
             className="text-sm font-medium"
           >
-            Downloads path
+            Path in slskd
           </label>
           <Input
             id="slskd-downloads-prefix"
-            placeholder="/downloads"
+            placeholder="Same as Folder"
             value={downloadsPrefix}
             onChange={(e) => setDownloadsPrefix(e.target.value)}
+            aria-describedby={
+              initial.last_download_missed
+                ? "slskd-downloads-prefix-help slskd-downloads-prefix-missed"
+                : "slskd-downloads-prefix-help"
+            }
             className="max-w-md font-mono"
           />
-          <p className="text-muted-foreground text-xs">
-            slskd&rsquo;s download root, as slskd sees it; stripped when a
-            completed drop is mapped into the inbox
+          <p
+            id="slskd-downloads-prefix-help"
+            className="text-muted-foreground text-xs"
+          >
+            slskd&rsquo;s download folder
+            {" ("}<code className="font-mono">directories.downloads</code>), as
+            slskd sees it.
           </p>
+          {/* Set by the server when the last slskd webhook that reached the
+              mapping named a folder outside slskd's folder here; cleared by
+              the next one that maps. A remembered state, not an event, so no
+              alert role: it matches the Review page's "Last error" line. */}
+          {initial.last_download_missed && (
+            <p
+              id="slskd-downloads-prefix-missed"
+              className="text-destructive flex items-start gap-2 text-sm"
+            >
+              <Warning className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+              <span className="min-w-0 break-words">
+                Last download didn&rsquo;t match Path in slskd.
+              </span>
+            </p>
+          )}
         </div>
 
         <div className="flex flex-col gap-1">
@@ -228,9 +291,8 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
             className="max-w-md font-mono"
           />
           <p className="text-muted-foreground text-xs">
-            the shared secret slskd sends as{" "}
-            <code className="font-mono">X-API-Key</code> on each completion
-            webhook
+            The secret slskd sends as{" "}
+            <code className="font-mono">X-API-Key</code> with each webhook.
           </p>
         </div>
 
@@ -239,15 +301,42 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
             id="slskd-auto-import"
             checked={autoImport}
             onCheckedChange={setAutoImport}
+            aria-describedby={
+              filesLine === null
+                ? AUTO_IMPORT_HELP_ID
+                : `${AUTO_IMPORT_HELP_ID} ${FILES_LINE_ID}`
+            }
           />
           <div className="flex flex-col gap-1">
             <label htmlFor="slskd-auto-import" className="text-sm font-medium">
               Auto-import completed downloads
             </label>
-            <p className="text-muted-foreground text-xs">
-              when on, a finished slskd download imports itself into the
-              library; uncertain matches are set aside for review
+            <p id={AUTO_IMPORT_HELP_ID} className="text-muted-foreground text-xs">
+              A finished download imports itself. Anything it can&rsquo;t
+              finish waits in{" "}
+              <Link
+                to="/review"
+                className="text-foreground focus-ring rounded-sm underline"
+              >
+                Review
+              </Link>
+              .
             </p>
+            {/* What an import does with the files, from the operation beets
+                loaded. Nothing while it loads or if it can't be read: a guess
+                would be a promise about the user's files. The id is on the
+                sentence only, so the switch is not described as "… Change". */}
+            {filesLine !== null && (
+              <p className="text-muted-foreground text-xs">
+                <span id={FILES_LINE_ID}>{filesLine}</span>{" "}
+                <Link
+                  to="/settings/beets"
+                  className="text-foreground focus-ring rounded-sm underline"
+                >
+                  Change
+                </Link>
+              </p>
+            )}
           </div>
         </div>
 
@@ -257,14 +346,6 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
             download finishes (use the webhook secret you set above).
           </p>
         </CopyableSnippet>
-
-        <p className="text-muted-foreground border-t pt-4 text-sm">
-          Set-aside downloads and imports needing a decision appear in{" "}
-          <Link to="/review" className="text-foreground underline">
-            Review
-          </Link>
-          .
-        </p>
       </div>
 
       <div className="border-border flex flex-wrap items-center gap-3 border-t pt-4">
@@ -344,7 +425,9 @@ function Panel({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <SettingsSection
       title="slskd"
-      description="Connect slskd so completed Soulseek downloads import themselves into the library. The API key and webhook secret are write-only; stored on the server and never shown again."
+      // What happens to a finished download is the Auto-import switch's to
+      // say: said here too, it was said twice, and untrue with the switch off.
+      description="Connect your slskd, the Soulseek client. The API key and webhook secret are write-only; they’re stored on the server and never shown again."
     >
       {children}
     </SettingsSection>

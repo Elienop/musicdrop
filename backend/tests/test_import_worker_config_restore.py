@@ -672,13 +672,13 @@ def test_a_hardlink_run_goes_incremental_and_offers_a_skipped_album_again() -> N
     assert config["import"]["resume"].get(bool) is True
 
 
-def test_an_inbox_move_under_a_hardlink_config_leaves_history_to_the_user() -> None:
+def test_a_forced_move_under_a_hardlink_config_leaves_history_to_the_user() -> None:
     """Arm 5, and the reason arm 4 reads the FORCED operation rather than the
-    live config. An inbox import forces ``move``, so the download does not
-    survive the run and nothing can re-import it — but the user's config still
-    says ``hardlink: yes``. Reading the config instead of the merged flags would
-    turn history on for every inbox drop, and beets then skips a folder whose
-    files moved away and came back.
+    live config. A run started with ``operation: move`` does not keep the
+    download, so nothing can re-import it — but the user's config still says
+    ``hardlink: yes``. Reading the config instead of the merged flags would turn
+    history on for that run, and beets then skips a folder whose files moved
+    away and came back.
     """
     from app.beets.import_session import run_import_worker
 

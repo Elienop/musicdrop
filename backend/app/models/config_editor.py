@@ -142,15 +142,14 @@ class ImportSection(BaseModel):
     and this row is dropped (``app/beets/config_check.py``). A value this refuses
     gets no advisory.
 
-    The ``copy`` field name is dictated by beets' YAML key (``import.copy``);
-    it shadows ``BaseModel.copy()`` but Pydantic v2 only emits a UserWarning
-    and the model still works. The type: ignore handles mypy's stricter
-    objection to redefining an inherited method's type."""
+    beets' key ``import.copy`` is read into ``copy_`` through Pydantic's alias,
+    because a field named ``copy`` shadows ``BaseModel.copy()`` and Pydantic
+    warns about it on every start."""
 
     model_config = ConfigDict(extra="ignore")
 
     @field_validator(
-        "copy",
+        "copy_",
         "move",
         "write",
         "autotag",
@@ -183,7 +182,7 @@ class ImportSection(BaseModel):
             raise ValueError("must be a bool: write yes or no, without quotes")
         return value
 
-    copy: bool = True  # type: ignore[assignment]  # beets YAML key; shadows BaseModel.copy()
+    copy_: bool = Field(default=True, alias="copy")
     move: bool = False
     write: bool = True
     autotag: bool = True
@@ -307,9 +306,10 @@ def _incremental_advisory(section: ImportSection) -> str | None:
         return None
     return (
         "MusicDrop honours import.incremental: a folder in beets' import history is"
-        " skipped and counted as already known. A sweep or a hardlink import forces it"
-        " on and sets incremental_skip_later itself; a bank apply and Import them again"
-        " force it off. `beet import` behaves the same way."
+        " skipped and counted as already known. A sweep, or a hardlink import from Add"
+        " from folder, forces it on and sets incremental_skip_later itself; a bank apply,"
+        " slskd's imports and Import them again force it off. `beet import` behaves the"
+        " same way."
     )
 
 
@@ -329,41 +329,19 @@ def _delete_advisory(section: ImportSection) -> str | None:
     )
 
 
-def _always_moves_advisory(key: str) -> Callable[[ImportSection], str | None]:
-    """The rule for a filing flag that an inbox import overrides.
-
-    One message, three keys, because the loop validates one key at a time — so a
-    single rule reading all three would see two defaults, and keying per flag
-    names the setting the user actually typed.
-
-    The user it lands on is the one who sets ``hardlink: yes`` because they seed
-    their downloads: clicking Import on an INBOX row moves the file out of the
-    seeding folder. It is honoured on a manual import, "Review now", a sweep and
-    a bank apply, so the message says where it applies rather than that it is
-    ignored.
-    """
-
-    # Only a hardlink forces the history keys (``run_import_worker``), and an
-    # ``incremental: no`` beside it fires no rule of its own, so it is said here.
-    history = (
-        " A manual hardlink import turns beets' import history on, so a kept folder"
-        " added again is skipped."
-        if key == "hardlink"
-        else ""
+def _hardlink_advisory(section: ImportSection) -> str | None:
+    # Every import honours the file operation since slskd's follow the config
+    # (decisions #77), so ``hardlink`` itself is not overridden. What is: a
+    # hardlink run from Add from folder forces the history keys
+    # (``run_import_worker``), and an ``incremental: no`` beside it fires no
+    # rule of its own, so it is said here.
+    if not section.hardlink:
+        return None
+    return (
+        "A hardlink import from Add from folder turns beets' import history on, so a"
+        " kept folder added again is skipped. `beet import` leaves history to your"
+        " config."
     )
-
-    def rule(section: ImportSection) -> str | None:
-        if not getattr(section, key):
-            return None
-        return (
-            f"MusicDrop honours import.{key} on a manual import, a sweep and a bank apply."
-            + history
-            + " Inbox imports move and Trash restore sets the file operation itself, so a"
-            " download filed from the inbox leaves the inbox. `beet import` from the command"
-            " line always honours it."
-        )
-
-    return rule
 
 
 #: The advisory rules, in the order they are reported. Each entry is a key under
@@ -377,30 +355,23 @@ def _always_moves_advisory(key: str) -> Callable[[ImportSection], str | None]:
 #: snapshots, forces and restores these keys around every session —
 #: ``incremental`` excepted: it is honoured on the default review path and
 #: forced by four exclusive arms, sweep, bank-apply, hardlink and the per-run
-#: ``incremental: False`` that "Import them again" and Review send
+#: ``incremental: False`` that "Import them again", Review and slskd's imports send
 #: (``import_session.run_import_worker``), which is what its advisory says).
 #:
-#: ``link``/``hardlink``/``reflink`` are HONOURED on a manual import, a sweep
-#: and a bank apply, and overridden by the inbox routes, which name
-#: ``operation="move"``, and by Trash restore, whose two arms each name their
-#: own: ``move=True`` for the ordinary re-import (``trash_manage.restore_album``,
-#: the arm every album Delete reaches — ``_MOVED_ITEMS_NOTE``) and
-#: ``in_place=True`` for the move-back (``trash_manage._restore_to_origin``),
-#: whose folder is already at the destination. Their advisory is worded per-key
-#: and per-PATH, not
-#: "MusicDrop overrides this", because the override belongs to the request rather
-#: than to the saved config. A config with every file operation off has no rule
-#: at all — beets imports in place, which is its own behaviour with no override
-#: to name. What each import resolved to is LOGGED by ``run_import_worker``.
+#: ``link``/``hardlink``/``reflink`` are HONOURED by every import, slskd's
+#: included (decisions #77), so ``link`` and ``reflink`` have no rule; ``hardlink``
+#: has one only for the history keys an Add from folder hardlink run forces.
+#: Trash restore names its own operation, but for a restore, not an import. A
+#: config with every file operation off has no rule at all — beets imports in
+#: place, which is its own behaviour with no override to name. What each import resolved to is
+#: LOGGED by ``run_import_worker``.
 _IMPORT_ADVISORY_RULES: Final[tuple[tuple[str, Callable[[ImportSection], str | None]], ...]] = (
     ("autotag", _autotag_advisory),
     ("duplicate_action", _duplicate_action_advisory),
     ("singletons", _singletons_advisory),
     ("incremental", _incremental_advisory),
     ("delete", _delete_advisory),
-    ("link", _always_moves_advisory("link")),
-    ("hardlink", _always_moves_advisory("hardlink")),
-    ("reflink", _always_moves_advisory("reflink")),
+    ("hardlink", _hardlink_advisory),
 )
 
 

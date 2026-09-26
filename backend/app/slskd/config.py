@@ -52,12 +52,18 @@ class SlskdConfig(BaseModel):
     # And one hypothesis that was tested and REFUTED, recorded because a reader
     # who knows ``/api/slskd/webhook`` is gate-exempt will reasonably doubt the
     # paragraph above: the webhook does NOT reach this field. Verified against the
-    # handler (app/api/slskd.py:150) — it reads only ``webhook_secret`` (in its
-    # auth dependency), ``auto_import``, ``downloads_prefix``,
-    # ``app.state.inbox_dir`` and the queue. There is no anonymous path here.
+    # handler (``slskd_webhook`` in app/api/slskd.py) — it reads only
+    # ``webhook_secret`` (in its auth dependency), ``auto_import``,
+    # ``downloads_prefix``, ``app.state.inbox_dir`` and the queue, and writes only
+    # ``app.state.slskd_last_download_missed`` and, when the folder maps, that
+    # folder onto the acquisition queue. There is no anonymous path here.
     base_url: str = ""
     token: str = ""  # the slskd API key
-    downloads_prefix: str = ""  # slskd's container-namespace download root (stripped on remap)
+    # "Path in slskd": slskd's download folder as slskd sees it. The name is kept
+    # from when it was a text prefix, so saved files and the env var carry over.
+    # Matched by whole folder names (``service.remap_to_inbox``); empty means
+    # slskd and MusicDrop see the same path; a folder outside it is refused.
+    downloads_prefix: str = ""
     # Authenticates the inbound webhook — the sole credential in front of the one
     # gate-exempt mutating route. Live footgun: ``update`` treats ``None`` as keep
     # but ``""`` as a real write, so blanking this succeeds and
