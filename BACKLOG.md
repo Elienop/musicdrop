@@ -2011,8 +2011,9 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     included: an untagged or artist-less album renders an absolute subpath and files OUTSIDE
     the library (`//00 .flac`; album "tmp" → `/tmp/01 ….flac`). New installs are fixed (the
     starter lists beets' rules, 2026-09-26). For existing configs: a migration, an advisory, or
-    extending "Add recommended rules", which today APPENDS after beets' rules, so "Wait…" ends
-    "Wait..." and escapes `\.$` beside the ASCII "Wait.._" folder (`NamingPanel.tsx` ~690-702).
+    extending "Add recommended rules", which today APPENDS after beets' rules (the "Wait…"
+    fork this line once claimed from that order does not happen: see "NOT open, measured"
+    in the next entry).
     **Owner chose (2026-09-26, decisions #79): the Naming page warns when beets' path rules are
     missing, and "Add recommended rules" restores them in beets' order after the typographic
     rules — a follow-up branch; nothing edits a config without a Save.** Search words: replace,
@@ -2028,13 +2029,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - **What the Naming rules fix leaves open (2026-09-26).** New mechanisms, not built; from the
   code and UI seats on `fix/naming-beets-path-rules`.
-  - Installs that pressed the OLD button on a no-block config hold beets' nine rules THEN the
-    typographic five. Every beets pattern is present, so no warning shows, but the order forks
-    "Wait…" (→ `Wait...`) from a typed "Wait..." (→ `Wait.._`): two folders, one ending in a
-    period (measured with beets' `sanitize_path`). The button fixes it; nothing prompts the
-    press. Detecting it needs an order check; beets applies rules in list order
-    (`library/library.py` ~64) and has none. Harm is a twin folder, not a file outside the
-    library.
+  - NOT open, measured: rule ORDER does not fork "Wait…" from "Wait...". A code seat measured
+    beets-then-typographic through `sanitize_path` alone (→ `Wait...` vs `Wait.._`), but
+    `legalize_path` runs the rules TWICE (`util/__init__.py` ~763-766, "Re-sanitize following
+    truncation (including user replacements)"), so through `Item.destination` both orders
+    give `Wait.._` for both (measured 2026-09-26 with the owner's own block, which lists
+    beets' rules first). Installs that pressed the old button need nothing.
   - An `include:` file's `replace:` wins over config.yaml's (`beets/__init__.py` ~33-34 into
     confuse `core.py` ~617-619). The page reads config.yaml only, so the warning can be wrong
     either way. The page had this blind spot before the branch.
