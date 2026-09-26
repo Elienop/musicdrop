@@ -499,13 +499,19 @@ class ReplaceError(BaseModel):
 class NamingConfig(BaseModel):
     """Response of ``GET /api/config/naming`` — the current ``paths:``/``replace:``
     split into structured rows, the CAS ``sha256`` token (same one the config
-    snapshot uses), plus the initial previews so the panel paints fully populated."""
+    snapshot uses), plus the initial previews so the panel paints fully populated.
+
+    ``beets_replace`` is beets' own ``replace:`` rules, in the order the installed
+    beets lists them, sent whether or not config.yaml has a ``replace:`` block
+    (a block replaces beets' rules outright). Empty when beets' defaults cannot be
+    read."""
 
     default: str | None
     comp: str | None
     singleton: str | None
     custom: list[NamingRuleInput]
     replace: list[ReplaceRuleInput]
+    beets_replace: list[ReplaceRuleInput]
     sha256: str
     previews: list[RenderedRule]
     replace_errors: list[ReplaceError]

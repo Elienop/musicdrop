@@ -34,6 +34,7 @@ import os
 import re
 import stat
 import threading
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Final, NamedTuple, cast
 
@@ -584,6 +585,16 @@ def _split_paths(
     return default, comp, singleton, custom
 
 
+def _replace_rows(pairs: Iterable[tuple[object, object]]) -> list[ReplaceRuleInput]:
+    """``replace:`` rows in the order given, which is the file's: beets' loader
+    builds every map as an ``OrderedDict`` in document order
+    (``confuse/yaml_util.py:41-68``), and beets applies the rules in that order
+    (``beets/library/library.py:64``)."""
+    return [
+        ReplaceRuleInput(pattern=str(p), replacement="" if r is None else str(r)) for p, r in pairs
+    ]
+
+
 def read_naming(handle: LibraryHandle) -> NamingConfig:
     """Parse the on-disk ``paths:``/``replace:`` into structured rows + CAS sha,
     falling back per key to beets' built-in defaults so the panel reflects the
@@ -625,17 +636,16 @@ def read_naming(handle: LibraryHandle) -> NamingConfig:
     replace_map = replace_raw if isinstance(replace_raw, dict) else {}
     if not replace_map:
         replace_map = replace_default
-    replace = [
-        ReplaceRuleInput(pattern=str(p), replacement="" if r is None else str(r))
-        for p, r in replace_map.items()
-    ]
 
     return NamingConfig(
         default=default,
         comp=comp,
         singleton=singleton,
         custom=custom,
-        replace=replace,
+        replace=_replace_rows(replace_map.items()),
+        # Sent beside ``replace`` because a block hides them: the panel needs
+        # them to say which of beets' rules the rows leave out.
+        beets_replace=_replace_rows(replace_default.items()),
         sha256=sha,
         previews=[],
         replace_errors=[],
