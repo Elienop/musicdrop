@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { ImportAlbumSummary, ImportJobState } from "@/api/useImport";
 import type { AppIcon } from "@/components/icons";
 import { Pause, Stop, Success } from "@/components/icons";
+import { RECENT_FOLDERS_KEY } from "@/lib/useRecentFolders";
 import { ImportPage } from "@/pages/import/ImportPage";
 import { ELAPSED_AFTER_S } from "@/pages/import/importStatus";
 import {
@@ -33,13 +34,18 @@ const SWEEP_JOB_URL = `${window.location.origin}/api/import/s1`;
 // route, two labels.
 const SWEEP_STOP_URL = `${window.location.origin}/api/import/s1/stop`;
 const IMPORT_OP_URL = `${window.location.origin}/api/config/import-operation`;
+const SOURCES_URL = `${window.location.origin}/api/sources`;
 
-// The path box's line reads what imports do with the files. Every entry
-// render asks; `move` is the starter's answer.
+// The path box's line reads what imports do with the files, and Sources lists
+// the Folder sources. Every entry render asks both; `move` is the starter's
+// answer and a fresh install has no sources. Recent lives in this browser's
+// storage, which outlives a test, so each starts with none.
 beforeEach(() => {
   server.use(
     http.get(IMPORT_OP_URL, () => HttpResponse.json({ operation: "move" })),
+    http.get(SOURCES_URL, () => HttpResponse.json({ sources: [] })),
   );
+  localStorage.removeItem(RECENT_FOLDERS_KEY);
 });
 
 function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
@@ -211,7 +217,7 @@ describe("ImportPage — entry", () => {
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Folder path")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /start import/i }),
+      screen.getByRole("button", { name: "Review now" }),
     ).toBeInTheDocument();
   });
 
@@ -231,7 +237,7 @@ describe("ImportPage — entry", () => {
     const user = userEvent.setup();
     renderAt("/import");
 
-    const button = screen.getByRole("button", { name: /start import/i });
+    const button = screen.getByRole("button", { name: "Review now" });
     expect(button).toBeDisabled();
 
     await user.type(screen.getByLabelText("Folder path"), "/music/incoming");
@@ -253,7 +259,7 @@ describe("ImportPage — entry", () => {
     renderAt("/import");
 
     await user.type(screen.getByLabelText("Folder path"), "/music/incoming");
-    await user.click(screen.getByRole("button", { name: /start import/i }));
+    await user.click(screen.getByRole("button", { name: "Review now" }));
 
     // The job query now drives the page (the live feed's scanning cue shows).
     expect(
@@ -279,7 +285,7 @@ describe("ImportPage — entry", () => {
     renderAt("/import");
 
     await user.type(screen.getByLabelText("Folder path"), "/music/incoming");
-    await user.click(screen.getByRole("button", { name: /start import/i }));
+    await user.click(screen.getByRole("button", { name: "Review now" }));
 
     const button = await screen.findByRole("button", { name: /starting/i });
     expect(button).toHaveAttribute("aria-disabled", "true");
@@ -309,7 +315,7 @@ describe("ImportPage — entry", () => {
     renderAt("/import");
 
     await user.type(screen.getByLabelText("Folder path"), "/music/incoming");
-    await user.click(screen.getByRole("button", { name: /start import/i }));
+    await user.click(screen.getByRole("button", { name: "Review now" }));
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(
@@ -322,7 +328,7 @@ describe("ImportPage — entry", () => {
     // Start keeps focus through a failure (only `aria-disabled` while pending),
     // so the sentence is its description on the way back to it.
     expect(
-      screen.getByRole("button", { name: /start import/i }),
+      screen.getByRole("button", { name: "Review now" }),
     ).toHaveAttribute("aria-describedby", alert.id);
     expect(alert.id).not.toBe("");
     // Still on the entry screen (no ?job=, so the input is still shown).
@@ -345,7 +351,7 @@ describe("ImportPage — entry", () => {
     renderAt("/import");
 
     await user.type(screen.getByLabelText("Folder path"), "/music/incoming");
-    await user.click(screen.getByRole("button", { name: /start import/i }));
+    await user.click(screen.getByRole("button", { name: "Review now" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "the music folder is not mounted; imports are refused.",
@@ -363,7 +369,7 @@ describe("ImportPage — entry", () => {
     renderAt("/import");
 
     await user.type(screen.getByLabelText("Folder path"), "/music/incoming");
-    await user.click(screen.getByRole("button", { name: /start import/i }));
+    await user.click(screen.getByRole("button", { name: "Review now" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Couldn’t start the import. Check the path and the backend, then try again.",
@@ -382,7 +388,7 @@ describe("ImportPage — entry", () => {
     expect(resume).toHaveAttribute("href", "/import?job=job-9");
     // Start is gated while an import is already running.
     expect(
-      screen.getByRole("button", { name: /start import/i }),
+      screen.getByRole("button", { name: "Review now" }),
     ).toBeDisabled();
   });
 
@@ -432,7 +438,7 @@ describe("ImportPage — entry", () => {
     renderAt("/import");
 
     await user.type(screen.getByLabelText("Folder path"), "/music/incoming");
-    await user.click(screen.getByRole("button", { name: /start import/i }));
+    await user.click(screen.getByRole("button", { name: "Review now" }));
 
     // The 409-triggered probe invalidation surfaces the running job as a Resume.
     const resume = await screen.findByRole("link", { name: /resume/i });
@@ -461,13 +467,13 @@ describe("ImportPage — entry", () => {
 
     const field = screen.getByLabelText("Folder path");
     await user.type(field, "/music/incmoing");
-    await user.click(screen.getByRole("button", { name: /start import/i }));
+    await user.click(screen.getByRole("button", { name: "Review now" }));
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("That folder doesn’t exist.");
     expect(field).toHaveAttribute("aria-invalid", "true");
     expect(
-      screen.getByRole("button", { name: /start import/i }),
+      screen.getByRole("button", { name: "Review now" }),
     ).toHaveAttribute("aria-describedby", alert.id);
 
     await user.type(field, "x");
@@ -475,7 +481,7 @@ describe("ImportPage — entry", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(field).toHaveAttribute("aria-invalid", "false");
     expect(
-      screen.getByRole("button", { name: /start import/i }),
+      screen.getByRole("button", { name: "Review now" }),
     ).not.toHaveAttribute("aria-describedby");
   });
 
@@ -503,7 +509,7 @@ describe("ImportPage — entry", () => {
 
     const field = screen.getByLabelText("Folder path");
     await user.type(field, "/media/downloads/gone");
-    await user.click(screen.getByRole("button", { name: /start import/i }));
+    await user.click(screen.getByRole("button", { name: "Review now" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "That folder doesn’t exist.",
     );
@@ -539,7 +545,7 @@ describe("ImportPage — entry", () => {
     renderAt("/import");
 
     await user.type(screen.getByLabelText("Folder path"), "/music/incoming");
-    await user.click(screen.getByRole("button", { name: /start import/i }));
+    await user.click(screen.getByRole("button", { name: "Review now" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "A library operation is in progress.",
@@ -3727,11 +3733,8 @@ describe("ImportPage — sweep & bank", () => {
     const user = userEvent.setup();
     renderAt("/import");
 
-    await user.click(
-      await screen.findByRole("button", { name: /sweep & bank/i }),
-    );
     await user.type(screen.getByLabelText("Folder path"), "/library");
-    await user.click(screen.getByRole("button", { name: /start sweep/i }));
+    await user.click(screen.getByRole("button", { name: "Sweep & bank" }));
 
     await waitFor(() =>
       expect(body).toEqual({
@@ -3741,7 +3744,7 @@ describe("ImportPage — sweep & bank", () => {
     );
   });
 
-  test("Review now (the default) posts no options — unchanged contract", async () => {
+  test("Review now posts no options — unchanged contract", async () => {
     let body: unknown = null;
     server.use(
       http.post(IMPORT_URL, async ({ request }) => {
@@ -3762,7 +3765,7 @@ describe("ImportPage — sweep & bank", () => {
     renderAt("/import");
 
     await user.type(screen.getByLabelText("Folder path"), "/in");
-    await user.click(screen.getByRole("button", { name: /start import/i }));
+    await user.click(screen.getByRole("button", { name: "Review now" }));
 
     await waitFor(() => expect(body).toEqual({ path: "/in" }));
   });
@@ -3780,7 +3783,7 @@ describe("ImportPage — sweep & bank", () => {
     renderAt("/import");
 
     await user.type(screen.getByLabelText("Folder path"), "/library");
-    await user.click(screen.getByRole("button", { name: /start import/i }));
+    await user.click(screen.getByRole("button", { name: "Review now" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/must move/);
   });
@@ -4219,5 +4222,418 @@ describe("ImportPage — sweep & bank", () => {
       "href",
       "/import?job=s1",
     );
+  });
+});
+
+describe("ImportPage — Sonarr's order: Sources, Recent, two starts", () => {
+  const FOLDERS_URL = `${window.location.origin}/api/folders`;
+  const SLSKD_URL = `${window.location.origin}/api/slskd/settings`;
+  const HELP = "Sweep & bank imports confident matches and banks the rest for Review.";
+
+  beforeEach(() => {
+    server.use(
+      http.get(ACTIVE_URL, () =>
+        HttpResponse.json({ active: false, job_id: null }),
+      ),
+    );
+  });
+
+  const field = () => screen.getByLabelText("Folder path");
+  const review = () => screen.getByRole("button", { name: "Review now" });
+  const sweep = () => screen.getByRole("button", { name: "Sweep & bank" });
+
+  function withSources(
+    ...rows: { name: string; folder: string; exists?: boolean }[]
+  ) {
+    server.use(
+      http.get(SOURCES_URL, () =>
+        HttpResponse.json({
+          sources: rows.map(({ name, folder, exists = true }) => ({
+            id: `id-${name}`,
+            name,
+            folder,
+            exists,
+          })),
+        }),
+      ),
+    );
+  }
+
+  /** Recent as this browser stored it, newest first. */
+  function seedRecent(...paths: string[]) {
+    localStorage.setItem(
+      RECENT_FOLDERS_KEY,
+      JSON.stringify(paths.map((path) => ({ path, at: Date.now() }))),
+    );
+  }
+
+  function storedPaths(): string[] {
+    const rows = JSON.parse(
+      localStorage.getItem(RECENT_FOLDERS_KEY) ?? "[]",
+    ) as { path: string }[];
+    return rows.map((row) => row.path);
+  }
+
+  /** Records every start's body; answers each with `status`. */
+  function countStarts(status: 202 | 422) {
+    const bodies: unknown[] = [];
+    server.use(
+      http.post(IMPORT_URL, async ({ request }) => {
+        bodies.push(await request.json());
+        return status === 202
+          ? HttpResponse.json({ job_id: "job-1" }, { status: 202 })
+          : HttpResponse.json(
+              { detail: "That folder doesn’t exist." },
+              { status: 422 },
+            );
+      }),
+      http.get(JOB_URL, () =>
+        HttpResponse.json(makeJob({ phase: "scanning", albums: [] })),
+      ),
+    );
+    return bodies;
+  }
+
+  /** `a` comes before `b` in the document. */
+  function expectBefore(a: Element, b: Element) {
+    expect(
+      a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  }
+
+  test("the sections run in order, the refusal right above the buttons", async () => {
+    withSources({ name: "yubal", folder: "/media/downloads/yubal" });
+    seedRecent("/media/downloads/Older");
+    countStarts(422);
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    await user.type(field(), "/media/downloads/gone");
+    await user.click(review());
+    const alert = await screen.findByRole("alert");
+
+    const sequence = [
+      field(),
+      screen.getByRole("button", { name: "Browse folders" }),
+      await screen.findByText("Files move into your library."),
+      await screen.findByRole("group", { name: "Sources" }),
+      screen.getByRole("group", { name: "Recent" }),
+      alert,
+      review(),
+      sweep(),
+      screen.getByText(HELP),
+    ];
+    for (let i = 1; i < sequence.length; i += 1) {
+      expectBefore(sequence[i - 1], sequence[i]);
+    }
+    // Right above: nothing sits between the sentence and the buttons.
+    expect(alert.nextElementSibling).toContainElement(review());
+    // Sources' own Change goes to Settings → Sources.
+    expect(
+      within(screen.getByRole("group", { name: "Sources" })).getByRole("link", {
+        name: "Change",
+      }),
+    ).toHaveAttribute("href", "/settings/sources");
+  });
+
+  test("the Import mode switch and its single Start are gone", async () => {
+    let sourcesAsked = false;
+    server.use(
+      http.get(SOURCES_URL, () => {
+        sourcesAsked = true;
+        return HttpResponse.json({ sources: [] });
+      }),
+    );
+    renderAt("/import");
+    await screen.findByText("Files move into your library.");
+    expect(screen.queryByRole("group", { name: "Import mode" })).toBeNull();
+    expect(screen.queryByText(/^Interactive:/)).toBeNull();
+    expect(screen.queryByText(/^Unattended:/)).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /start (import|sweep)/i }),
+    ).toBeNull();
+    // Both starts are there, disabled until a path is typed.
+    expect(review()).toBeDisabled();
+    expect(sweep()).toBeDisabled();
+    // No sources and no Recent yet: neither section shows.
+    await waitFor(() => expect(sourcesAsked).toBe(true));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole("group", { name: "Sources" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Recent" })).toBeNull();
+  });
+
+  test("Enter in the path box is Review now", async () => {
+    const bodies = countStarts(202);
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    await user.type(field(), "/media/downloads/Album{Enter}");
+
+    await waitFor(() =>
+      expect(bodies).toEqual([{ path: "/media/downloads/Album" }]),
+    );
+  });
+
+  test("the help line is Sweep & bank's description", () => {
+    renderAt("/import");
+    expect(sweep()).toHaveAccessibleDescription(HELP);
+    expect(review()).not.toHaveAttribute("aria-describedby");
+  });
+
+  test("while a start is in flight the pressed one says Starting… and both are aria-disabled", async () => {
+    let posts = 0;
+    server.use(
+      http.post(IMPORT_URL, async () => {
+        posts += 1;
+        await delay("infinite");
+        return HttpResponse.json({ job_id: "s1" }, { status: 202 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    await user.type(field(), "/media/downloads/Album");
+    await user.click(sweep());
+
+    const pressed = await screen.findByRole("button", { name: /starting/i });
+    expect(pressed).toHaveTextContent("Starting…");
+    // The other keeps its own label, and neither is `disabled`: focus stays.
+    for (const button of [pressed, review()]) {
+      expect(button).toHaveAttribute("aria-disabled", "true");
+      expect(button).not.toBeDisabled();
+    }
+    expect(screen.queryByRole("button", { name: "Sweep & bank" })).toBeNull();
+
+    // Neither starts a second import.
+    await user.click(review());
+    await user.click(pressed);
+    expect(posts).toBe(1);
+  });
+
+  test("a Folder-source pin fills the path box, posts nothing and focuses the box", async () => {
+    withSources({ name: "yubal", folder: "/media/downloads/yubal" });
+    const bodies = countStarts(202);
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    await user.click(await screen.findByRole("button", { name: "yubal" }));
+
+    expect(field()).toHaveValue("/media/downloads/yubal");
+    expect(field()).toHaveFocus();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(bodies).toEqual([]);
+  });
+
+  test("no slskd pin, even with slskd's folder present and auto-import on (#77)", async () => {
+    // Control: slskd's message is the one way in. A slskd shortcut here would
+    // race the automatic import and pick up half-arrived albums.
+    withSources({ name: "yubal", folder: "/media/downloads/yubal" });
+    server.use(
+      http.get(SLSKD_URL, () =>
+        HttpResponse.json({
+          base_url: "http://slskd:5030",
+          folder: "/media/downloads/slskd",
+          folder_exists: true,
+          downloads_prefix: "/downloads",
+          auto_import: true,
+          has_token: true,
+          has_webhook_secret: true,
+          last_download_missed: false,
+        }),
+      ),
+    );
+    renderAt("/import");
+
+    const group = await screen.findByRole("group", { name: "Sources" });
+    expect(
+      within(group)
+        .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["yubal"]);
+    expect(screen.queryByRole("button", { name: /slskd/i })).toBeNull();
+    expect(screen.queryByText(/slskd/i)).toBeNull();
+  });
+
+  test("a missing source's pin stays, aria-disabled, and says Missing", async () => {
+    withSources({ name: "gone", folder: "/media/downloads/gone", exists: false });
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    const pin = await screen.findByRole("button", { name: "gone Missing" });
+    expect(pin).toHaveAttribute("aria-disabled", "true");
+    await user.click(pin);
+    expect(field()).toHaveValue("");
+    expect(field()).not.toHaveFocus();
+  });
+
+  test("a pin or a Recent row clears a stale refusal", async () => {
+    withSources({ name: "yubal", folder: "/media/downloads/yubal" });
+    seedRecent("/media/downloads/Older");
+    countStarts(422);
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    await user.type(field(), "/media/downloads/gone");
+    await user.click(review());
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "yubal" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(field()).toHaveAttribute("aria-invalid", "false");
+
+    await user.click(review());
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "/media/downloads/Older" }),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(field()).toHaveValue("/media/downloads/Older");
+    expect(field()).toHaveFocus();
+  });
+
+  test("a Recent row fills the path box and posts nothing", async () => {
+    // The second row, so a click that reads the wrong row is caught.
+    seedRecent("/media/downloads/Newer", "/media/downloads/Older");
+    const bodies = countStarts(202);
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    await user.click(
+      screen.getByRole("button", { name: "/media/downloads/Older" }),
+    );
+
+    expect(field()).toHaveValue("/media/downloads/Older");
+    expect(field()).toHaveFocus();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(bodies).toEqual([]);
+  });
+
+  test("Recent lists newest first, each with its day", () => {
+    seedRecent("/media/downloads/B", "/media/downloads/A");
+    renderAt("/import");
+
+    const group = screen.getByRole("group", { name: "Recent" });
+    const paths = within(group)
+      .getAllByRole("button")
+      .filter((button) => !button.hasAttribute("aria-label"))
+      .map((button) => button.textContent);
+    expect(paths).toEqual(["/media/downloads/B", "/media/downloads/A"]);
+    expect(within(group).getAllByText("Today")).toHaveLength(2);
+  });
+
+  test("a path joins Recent only when the server accepts it", async () => {
+    countStarts(422);
+    const user = userEvent.setup();
+    const { unmount } = renderAt("/import");
+
+    await user.type(field(), "/media/downloads/gone");
+    await user.click(review());
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(localStorage.getItem(RECENT_FOLDERS_KEY)).toBeNull();
+    unmount();
+
+    countStarts(202);
+    renderAt("/import");
+    await user.type(field(), "  /media/downloads/Album  ");
+    await user.click(sweep());
+    await screen.findByText(/scanning your folder/i);
+    // The text the server was sent, trimmed.
+    expect(storedPaths()).toEqual(["/media/downloads/Album"]);
+  });
+
+  test("Recent keeps ten, newest first, and a repeat moves to the top", async () => {
+    const ten = Array.from({ length: 10 }, (_, i) => `/media/downloads/p${i}`);
+    seedRecent(...ten);
+    countStarts(202);
+    const user = userEvent.setup();
+    const { unmount } = renderAt("/import");
+
+    await user.type(field(), "/media/downloads/p5");
+    await user.click(review());
+    await screen.findByText(/scanning your folder/i);
+    expect(storedPaths()).toEqual([
+      "/media/downloads/p5",
+      ...ten.filter((path) => path !== "/media/downloads/p5"),
+    ]);
+    unmount();
+
+    seedRecent(...ten);
+    renderAt("/import");
+    await user.type(field(), "/media/downloads/new");
+    await user.click(review());
+    await screen.findByText(/scanning your folder/i);
+    expect(storedPaths()).toEqual(["/media/downloads/new", ...ten.slice(0, 9)]);
+  });
+
+  test("remove drops one row; focus moves to the next, else the previous, else the path box", async () => {
+    seedRecent("/r/a", "/r/b", "/r/c");
+    const user = userEvent.setup();
+    renderAt("/import");
+    const remove = (path: string) =>
+      screen.getByRole("button", { name: `Remove ${path} from Recent` });
+
+    await user.click(remove("/r/b"));
+    expect(storedPaths()).toEqual(["/r/a", "/r/c"]);
+    expect(screen.queryByRole("button", { name: "/r/b" })).toBeNull();
+    expect(remove("/r/c")).toHaveFocus();
+
+    await user.click(remove("/r/c"));
+    expect(remove("/r/a")).toHaveFocus();
+
+    await user.click(remove("/r/a"));
+    expect(storedPaths()).toEqual([]);
+    expect(screen.queryByRole("group", { name: "Recent" })).toBeNull();
+    expect(field()).toHaveFocus();
+  });
+
+  test("storage that throws: no Recent section, and a start still goes through", async () => {
+    // A browser that blocks site storage throws on the property itself.
+    const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      get() {
+        throw new DOMException("The operation is insecure.", "SecurityError");
+      },
+    });
+    try {
+      withSources({ name: "yubal", folder: "/media/downloads/yubal" });
+      const bodies = countStarts(202);
+      const user = userEvent.setup();
+      renderAt("/import");
+
+      await screen.findByRole("group", { name: "Sources" });
+      expect(screen.queryByRole("group", { name: "Recent" })).toBeNull();
+
+      await user.type(field(), "/media/downloads/Album");
+      await user.click(review());
+      expect(await screen.findByText(/scanning your folder/i)).toBeInTheDocument();
+      expect(bodies).toEqual([{ path: "/media/downloads/Album" }]);
+    } finally {
+      if (original !== undefined) {
+        Object.defineProperty(globalThis, "localStorage", original);
+      }
+    }
+  });
+
+  test("Browse opens at the newest Recent folder when the box is empty", async () => {
+    seedRecent("/media/downloads/New", "/media/downloads/Old");
+    const asked: (string | null)[] = [];
+    server.use(
+      http.get(FOLDERS_URL, ({ request }) => {
+        const path = new URL(request.url).searchParams.get("path");
+        asked.push(path);
+        return HttpResponse.json({
+          path: path ?? "/media",
+          parent: "/media",
+          folders: [],
+          total: 0,
+          refusal: null,
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    await user.click(screen.getByRole("button", { name: "Browse folders" }));
+    await waitFor(() => expect(asked).toEqual(["/media/downloads/New"]));
   });
 });

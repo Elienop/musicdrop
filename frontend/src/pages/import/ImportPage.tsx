@@ -12,6 +12,7 @@ import type {
   ImportAlbumSummary,
   ImportJobState,
   ImportProgress,
+  StartImportRequest,
   SweepStatus,
 } from "@/api/useImport";
 import {
@@ -28,6 +29,10 @@ import {
 } from "@/api/useImport";
 import type { AlbumOrigin } from "@/components/albums/album-grid";
 import { FolderBrowserDialog } from "@/components/folders/FolderBrowserDialog";
+import {
+  RecentFolderList,
+  SourcePins,
+} from "@/components/import/FolderShortcuts";
 import {
   AddFromFolder,
   Albums,
@@ -50,9 +55,9 @@ import { StatusBanner } from "@/components/system/StatusBanner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SEGMENT_SEP } from "@/lib/format";
+import { useRecentFolders } from "@/lib/useRecentFolders";
 import { useThrottledValue } from "@/lib/useThrottledValue";
 import { cn } from "@/lib/utils";
 import {
@@ -279,17 +284,40 @@ const FILES_LINE_ID = "import-files-help";
 /** The path box, named by its label. */
 const PATH_ID = "import-path";
 
-/** Entry: a server-path input + Start. Polls the active-import probe so a
- * running import the user navigated away from surfaces a Resume banner (and
- * Start is gated while one runs); the blank-path guard and the residual 409
- * (swap-lock / race) are surfaced locally. On success the URL gains
- * `?job=<id>` and the page flips to the live run. */
+/** The help line under the two start buttons, Sweep & bank's description. */
+const SWEEP_HELP_ID = "sweep-bank-help";
+
+/** The two ways to start, each with its own body. */
+type StartKind = "review" | "sweep";
+
+/** A start button's label while its own request is in flight. */
+function StartingLabel() {
+  return (
+    <>
+      <Spinner className="animate-spin" aria-hidden="true" />
+      Starting&hellip;
+    </>
+  );
+}
+
+/** Whether a start request is a sweep (the body Sweep & bank sends). */
+function isSweep(body: StartImportRequest | undefined): boolean {
+  return body?.options?.sweep === true;
+}
+
+/** Entry, in Sonarr's order (decision #54): the path box and its browser, the
+ * file-operation line, Sources, Recent, then Review now / Sweep & bank. Polls
+ * the active-import probe so a running import the user navigated away from
+ * surfaces a Resume banner (and both starts are gated while one runs); the
+ * blank-path guard and the residual 409 (swap-lock / race) are surfaced
+ * locally. On success the path joins Recent, the URL gains `?job=<id>` and the
+ * page flips to the live run. */
 function ImportEntry() {
   const [, setSearchParams] = useSearchParams();
   const [path, setPath] = useState("");
-  // Where Use in the folder browser sends focus.
+  // Where Use in the folder browser, a pin and a Recent row send focus.
   const pathRef = useRef<HTMLInputElement>(null);
-  const [mode, setMode] = useState<"review" | "sweep">("review");
+  const recentFolders = useRecentFolders();
   const start = useStartImport();
   const queryClient = useQueryClient();
   const active = useActiveImport();
@@ -332,19 +360,26 @@ function ImportEntry() {
     if (start.isError) start.reset();
   }
 
-  function onSubmit(e: React.SubmitEvent) {
-    e.preventDefault();
+  // A pin or a Recent row: the same setter as typing (a stale refusal clears),
+  // then the box takes focus, so its new value is read and Enter is Review now.
+  // Neither ever starts an import.
+  function onPick(value: string) {
+    onPathChange(value);
+    pathRef.current?.focus();
+  }
+
+  function onStart(kind: StartKind) {
     if (trimmed.length === 0) {
-      return; // Button is disabled too; guard the Enter key.
+      return; // Both buttons are disabled too; guard the Enter key.
     }
-    // The pending half of the button is `aria-disabled`, so the form still
-    // submits while a start is in flight — swallow it here, the same way the
-    // Pause button swallows its own click.
+    // The pending buttons are `aria-disabled`, so the form still submits while
+    // a start is in flight — swallow it here, the same way the Pause button
+    // swallows its own click.
     if (start.isPending) {
       return;
     }
     start.mutate(
-      mode === "sweep"
+      kind === "sweep"
         ? {
             path: trimmed,
             // All three fields: the generated ImportOptions marks defaulted
@@ -355,6 +390,8 @@ function ImportEntry() {
         : { path: trimmed },
       {
         onSuccess: (data) => {
+          // Only a path the server accepted (202) joins Recent (decision #54).
+          recentFolders.add(trimmed);
           setSearchParams({ job: data.job_id });
         },
         onError: (err) => {
@@ -366,6 +403,37 @@ function ImportEntry() {
           }
         },
       },
+    );
+  }
+
+  // Which button's start is in flight: that one shows the spinner.
+  let pendingKind: StartKind | null = null;
+  if (start.isPending) pendingKind = isSweep(start.variables) ? "sweep" : "review";
+
+  // Two states, two attributes. A blank path and a running import are reasons
+  // neither button can be used at all, so they stay `disabled`. Pending is a
+  // button's OWN commit: disabling it there strands keyboard focus on <body>
+  // (the Pagination rule, measured on the Pause button below), so both go
+  // `aria-disabled` and {@link onStart} swallows the repeat.
+  const startButtonState = {
+    disabled: trimmed.length === 0 || importActive,
+    "aria-disabled": start.isPending,
+    className: "aria-disabled:opacity-50",
+  };
+
+  // The descriptions, joined: a button keeps focus through a failed start
+  // (it is only `aria-disabled` while pending), so the sentence saying why the
+  // last press failed is what a keyboard user hears on coming back to it, and
+  // the resume hint still explains a button that is disabled outright.
+  function describedBy(...own: string[]): string | undefined {
+    return (
+      [
+        importActive ? "resume-import-hint" : null,
+        failure === null ? null : START_ERROR_ID,
+        ...own,
+      ]
+        .filter((id) => id !== null)
+        .join(" ") || undefined
     );
   }
 
@@ -413,25 +481,14 @@ function ImportEntry() {
         </StatusBanner>
       )}
 
-      <form className="flex flex-col gap-3" onSubmit={onSubmit}>
-        <div className="flex flex-col gap-2">
-          <span className="text-sm font-medium">Import mode</span>
-          <SegmentedControl
-            aria-label="Import mode"
-            value={mode}
-            onChange={(v) => setMode(v === "sweep" ? "sweep" : "review")}
-            options={[
-              { value: "review", label: "Review now" },
-              { value: "sweep", label: "Sweep & bank" },
-            ]}
-          />
-          <p className="text-muted-foreground text-xs">
-            {mode === "sweep"
-              ? "Unattended: strong matches import automatically; everything else is banked for review on the Review page. Re-running a sweep skips what’s already handled."
-              : "Interactive: each uncertain album waits for your decision before the import continues."}
-          </p>
-        </div>
-
+      <form
+        className="flex flex-col gap-3"
+        // Enter in the path box: the form's first submit button, Review now.
+        onSubmit={(e) => {
+          e.preventDefault();
+          onStart("review");
+        }}
+      >
         <div className="flex flex-col gap-2">
           {/* htmlFor, not a wrapping label: the Browse button beside the box
               cannot sit inside the box's label. */}
@@ -465,6 +522,7 @@ function ImportEntry() {
                 refusal exactly as typing does. */}
             <FolderBrowserDialog
               value={path}
+              recent={recentFolders.recent[0]?.path ?? null}
               onUse={onPathChange}
               fieldRef={pathRef}
             />
@@ -487,6 +545,16 @@ function ImportEntry() {
           )}
         </div>
 
+        <SourcePins onPick={onPick} />
+        <RecentFolderList
+          recent={recentFolders.recent}
+          onPick={onPick}
+          onRemove={recentFolders.remove}
+          fieldRef={pathRef}
+        />
+
+        {/* The refusal sits right above the buttons that caused it, so on a
+            phone it lands in view and does not push the pins under a finger. */}
         {failure !== null && (
           // `break-words`: these sentences carry repr'd filesystem paths, and
           // Chromium gives no wrap opportunity at `/` or `_`. Measured for the
@@ -505,44 +573,36 @@ function ImportEntry() {
           </p>
         )}
 
-        <div>
-          <Button
-            type="submit"
-            // Two states, two attributes. A blank path and a running import are
-            // reasons the control cannot be used at all, so they stay
-            // `disabled`. Pending is the button's OWN commit: disabling it there
-            // strands keyboard focus on <body> (the Pagination rule, measured on
-            // the Pause button below), so it goes `aria-disabled` and the submit
-            // handler swallows the repeat.
-            disabled={trimmed.length === 0 || importActive}
-            aria-disabled={start.isPending}
-            className="aria-disabled:opacity-50"
-            // Both descriptions, joined: this button keeps focus through a
-            // failed start (it is only `aria-disabled` while pending), so the
-            // sentence saying why the last press failed is what a keyboard user
-            // hears on coming back to it — and the resume hint still explains a
-            // Start that is disabled outright.
-            aria-describedby={
-              [
-                importActive ? "resume-import-hint" : null,
-                failure !== null ? START_ERROR_ID : null,
-              ]
-                .filter((id) => id !== null)
-                .join(" ") || undefined
-            }
-          >
-            {start.isPending ? (
-              <>
-                <Spinner className="animate-spin" aria-hidden="true" />
-                Starting&hellip;
-              </>
-            ) : (
-              <>
-                <AddFromFolder aria-hidden="true" />
-                {mode === "sweep" ? "Start sweep" : "Start import"}
-              </>
-            )}
-          </Button>
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="submit"
+              {...startButtonState}
+              aria-describedby={describedBy()}
+            >
+              {pendingKind === "review" ? (
+                <StartingLabel />
+              ) : (
+                <>
+                  <AddFromFolder aria-hidden="true" />
+                  Review now
+                </>
+              )}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              {...startButtonState}
+              aria-describedby={describedBy(SWEEP_HELP_ID)}
+              onClick={() => onStart("sweep")}
+            >
+              {pendingKind === "sweep" ? <StartingLabel /> : "Sweep & bank"}
+            </Button>
+          </div>
+          <p id={SWEEP_HELP_ID} className="text-muted-foreground text-xs">
+            Sweep &amp; bank imports confident matches and banks the rest for
+            Review.
+          </p>
         </div>
       </form>
     </PageBody>
