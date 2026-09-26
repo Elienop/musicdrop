@@ -119,9 +119,16 @@ entry carries a dated correction block where the pass changed it._
      lands every album of a folder inside slskd's folder records it in the ledger as
      `imported`, so "Not imported yet" hides it until a file is added, removed or renamed in it.
      `config_editor` lost its link/reflink advisory; hardlink's names only the history it forces.
-   - **A provider holds** a name, a kind (slskd, or a plain folder), the folder MusicDrop reads,
-     the operation and, only when the source reports its own container paths (slskd today), that
-     reported root (today's `downloads_prefix`).
+   - **A provider holds** a name and a folder, nothing else. BUILT (branch 2, S8) as
+     **Settings → Sources**: no per-source operation (`decisions` #53, #77) and no kind, because
+     slskd is not a source row (#77: slskd's message is the one way in); its card moved there
+     with its settings, file and routes unchanged, and shows its folder read-only. Folder
+     sources live in `<beets_dir>/sources.json` (`app/sources/store.py`), stored in the display
+     form the client sent and resolved on use; adding one refuses what an import start refuses,
+     with its sentences. Residuals: a non-UTF-8 folder that later gets a look-alike twin answers
+     409 at start (and reads as there on the list); no cap on how many, names may repeat, and a
+     folder may be added twice (cosmetic); a corrupt or unreadable file reads as empty and the
+     next add or remove replaces it (logged on every read).
    - **Beyond beets.** beets resolves the flags TWICE and the orders differ: `set_config` keeps
      one of move > link > hardlink > reflink, each clearing `copy` (`importer/session.py:114-138`),
      and the files stage then takes `copy` if it survived, telling `reflink: auto` apart from

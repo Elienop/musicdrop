@@ -14,8 +14,9 @@ the start refuses from).
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from functools import partial
-from typing import Annotated, Final
+from typing import Annotated, Final, TypeVar
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -44,6 +45,8 @@ from app.wire import AmbiguousDisplayName, display_path, resolve_posted_path
 
 router = APIRouter(tags=["folders"])
 
+_T = TypeVar("_T")
+
 #: Where the browser opens with no ``path``: the image's media mount, else ``/``.
 DEFAULT_FOLDER: Final = "/media"
 
@@ -60,7 +63,15 @@ MAX_FOLDERS: Final = 500
 #: so the cap really bounds threads. 2 because one person clicks through one
 #: dialog; a second is a double click or a second tab. No deadline: a hung mount
 #: hangs that request and parks the ones behind it, never the rest of the app.
+#: Settings → Sources shares it (:func:`folder_read`): the same person, reading
+#: the same kind of folder.
 _FOLDER_LIST_SLOTS: Final = anyio.CapacityLimiter(2)
+
+
+async def folder_read(read: Callable[[], _T]) -> _T:
+    """Run one blocking read of operator-chosen folders under the cap above."""
+    async with _FOLDER_LIST_SLOTS:
+        return await run_in_threadpool(read)
 
 
 def _start_folder(path: str | None) -> bytes:
@@ -182,8 +193,7 @@ async def list_folders(
     form a listing handed out, mapped back the way ``POST /api/import`` maps it.
     """
     try:
-        async with _FOLDER_LIST_SLOTS:
-            return await run_in_threadpool(partial(_read_listing, path, reg))
+        return await folder_read(partial(_read_listing, path, reg))
     except AmbiguousDisplayName:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=AMBIGUOUS_FOLDERS_DETAIL

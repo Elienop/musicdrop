@@ -1758,6 +1758,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Sources
+         * @description The Folder sources, in the order added. Never slskd.
+         */
+        get: operations["list_sources_api_sources_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sources/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Folder Source
+         * @description Add a Folder source when a start on its folder would not be refused.
+         */
+        post: operations["add_folder_source_api_sources_folders_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sources/folders/{source_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Folder Source
+         * @description Remove a Folder source. The folder on disk is not touched.
+         */
+        delete: operations["remove_folder_source_api_sources_folders__source_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/acquisition/status": {
         parameters: {
             query?: never;
@@ -3428,6 +3488,19 @@ export interface components {
             refusal: string | null;
         };
         /**
+         * FolderSourceCreate
+         * @description Body of ``POST /api/sources/folders``. Both fields are trimmed.
+         *
+         *     ``folder`` is a server folder, taken back the way ``POST /api/import`` takes
+         *     its ``path``.
+         */
+        FolderSourceCreate: {
+            /** Name */
+            name: string;
+            /** Folder */
+            folder: string;
+        };
+        /**
          * GroupDecision
          * @description One group's keep/remove decision in a batch resolve.
          *
@@ -5021,10 +5094,17 @@ export interface components {
          *     false once one maps. Other event types, and deliveries while auto-import is
          *     off, do not count. It lives in memory: false after a restart until the next
          *     miss.
+         *
+         *     ``folder`` is slskd's folder as MusicDrop sees it (``MUSICDROP_INBOX_DIR``),
+         *     read-only, and ``folder_exists`` is whether it is a folder right now.
          */
         SlskdSettings: {
             /** Base Url */
             base_url: string;
+            /** Folder */
+            folder: string;
+            /** Folder Exists */
+            folder_exists: boolean;
             /** Downloads Prefix */
             downloads_prefix: string;
             /** Auto Import */
@@ -5065,6 +5145,29 @@ export interface components {
             remoteDirectoryName?: string | null;
             /** Username */
             username?: string | null;
+        };
+        /**
+         * SourceList
+         * @description Every Folder source, in the order added.
+         */
+        SourceList: {
+            /** Sources */
+            sources: components["schemas"]["SourceSummary"][];
+        };
+        /**
+         * SourceSummary
+         * @description One Folder source. ``folder`` is the path as it was added (display form);
+         *     ``exists`` is whether it is a folder right now.
+         */
+        SourceSummary: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Folder */
+            folder: string;
+            /** Exists */
+            exists: boolean;
         };
         /**
          * StartImportRequest
@@ -12151,6 +12254,187 @@ export interface operations {
             };
             /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
             413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sources_api_sources_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceList"];
+                };
+            };
+            /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+        };
+    };
+    add_folder_source_api_sources_folders_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FolderSourceCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceSummary"];
+                };
+            };
+            /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Two folders display under the same name. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The folder does not exist, is not a folder or cannot be read, or it is or holds the library or MusicDrop's own data, or it is or holds slskd's whole folder, or the request failed validation. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_folder_source_api_sources_folders__source_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description No Folder source has that id. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

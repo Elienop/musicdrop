@@ -19,6 +19,9 @@ vi.mock("@/components/settings/PlexSettingsPanel", () => ({
 vi.mock("@/components/settings/SlskdPanel", () => ({
   SlskdPanel: () => <div data-testid="slskd-panel" />,
 }));
+vi.mock("@/components/settings/FolderSourcesPanel", () => ({
+  FolderSourcesPanel: () => <div data-testid="folder-sources-panel" />,
+}));
 vi.mock("@/pages/settings/AccountPanel", () => ({
   AccountPanel: () => <div data-testid="account-panel" />,
 }));
@@ -27,6 +30,7 @@ import { SettingsAccountPage } from "@/pages/settings/SettingsAccountPage";
 import { SettingsIntegrationsPage } from "@/pages/settings/SettingsIntegrationsPage";
 import { SettingsMetadataPage } from "@/pages/settings/SettingsMetadataPage";
 import { SettingsNamingPage } from "@/pages/settings/SettingsNamingPage";
+import { SettingsSourcesPage } from "@/pages/settings/SettingsSourcesPage";
 
 describe("settings section pages", () => {
   test("naming hosts the NamingPanel", () => {
@@ -41,10 +45,20 @@ describe("settings section pages", () => {
     expect(screen.getByTestId("artist-art-panel")).toBeInTheDocument();
   });
 
-  test("integrations hosts plex + slskd", () => {
+  test("integrations hosts plex only", () => {
     render(<SettingsIntegrationsPage />);
     expect(screen.getByTestId("plex-panel")).toBeInTheDocument();
-    expect(screen.getByTestId("slskd-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("slskd-panel")).toBeNull();
+  });
+
+  test("sources hosts slskd, then the folder list", () => {
+    render(<SettingsSourcesPage />);
+    const slskd = screen.getByTestId("slskd-panel");
+    const folders = screen.getByTestId("folder-sources-panel");
+    expect(
+      slskd.compareDocumentPosition(folders) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.queryByTestId("plex-panel")).toBeNull();
   });
 
   test("account hosts the AccountPanel", () => {

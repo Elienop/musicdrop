@@ -15,6 +15,7 @@ import {
 import { Spinner, Success, Warning } from "@/components/icons";
 import { CopyableSnippet } from "@/components/system/CopyableSnippet";
 import { SettingsSection } from "@/components/system/SettingsSection";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -41,9 +42,11 @@ const WEBHOOK_SNIPPET = `integration:
 const AUTO_IMPORT_HELP_ID = "slskd-auto-import-help";
 const FILES_LINE_ID = "slskd-files-help";
 
-/** Settings → slskd: connect a slskd instance (base URL + write-only API key +
- * Path in slskd, slskd's download folder as slskd sees it), set the shared webhook secret, and flip
- * auto-import so a completed download imports itself. Both secrets are
+/** Settings → Sources → slskd: show slskd's folder (read-only, set by
+ * MUSICDROP_INBOX_DIR), connect a slskd instance (base URL + write-only API
+ * key + Path in slskd, slskd's download folder as slskd sees it), set the
+ * shared webhook secret, and flip auto-import so a completed download imports
+ * itself. Both secrets are
  * write-only — the API returns only `has_token` / `has_webhook_secret`, so each
  * field shows a "saved" placeholder and is sent only when the user types a
  * replacement. */
@@ -174,6 +177,24 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
   return (
     <>
       <div className="flex flex-col gap-4">
+        {/* slskd's inbox, read-only: the environment sets it (#77). Missing
+            only matters to a user whose downloads import themselves, so the
+            badge follows the switch below, as it stands before a Save. */}
+        <dl className="flex flex-col gap-1">
+          <dt className="text-sm font-medium">Folder</dt>
+          <dd className="flex flex-wrap items-center gap-2">
+            <span className="min-w-0 font-mono text-sm break-all">
+              {initial.folder}
+            </span>
+            {!initial.folder_exists && autoImport && (
+              <Badge variant="outline">Missing</Badge>
+            )}
+          </dd>
+          <dd className="text-muted-foreground text-xs">
+            Set with <code className="font-mono">MUSICDROP_INBOX_DIR</code>.
+          </dd>
+        </dl>
+
         <div className="flex flex-col gap-1">
           <label htmlFor="slskd-base-url" className="text-sm font-medium">
             Base URL
@@ -291,8 +312,15 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
               Auto-import completed downloads
             </label>
             <p id={AUTO_IMPORT_HELP_ID} className="text-muted-foreground text-xs">
-              When on, a finished slskd download imports itself into the
-              library; uncertain matches are set aside for review.
+              A finished download imports itself. Anything it can&rsquo;t
+              finish waits in{" "}
+              <Link
+                to="/review"
+                className="text-foreground focus-ring rounded-sm underline"
+              >
+                Review
+              </Link>
+              .
             </p>
             {/* What an import does with the files, from the operation beets
                 loaded. Nothing while it loads or if it can't be read: a guess
@@ -318,17 +346,6 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
             download finishes (use the webhook secret you set above).
           </p>
         </CopyableSnippet>
-
-        <p className="text-muted-foreground border-t pt-4 text-sm">
-          Set-aside downloads and imports needing a decision appear in{" "}
-          <Link
-            to="/review"
-            className="text-foreground focus-ring rounded-sm underline"
-          >
-            Review
-          </Link>
-          .
-        </p>
       </div>
 
       <div className="border-border flex flex-wrap items-center gap-3 border-t pt-4">

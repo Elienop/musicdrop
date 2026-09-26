@@ -32,6 +32,7 @@ from app.api.plex import router as plex_router
 from app.api.reorganize import router as reorganize_router
 from app.api.search import router as search_router
 from app.api.slskd import router as slskd_router
+from app.api.sources import router as sources_router
 from app.api.stats import router as stats_router
 from app.api.trash import router as trash_router
 from app.artwork.cache import ArtistImageCache
@@ -693,6 +694,7 @@ app.include_router(stats_router, prefix="/api")
 app.include_router(playlists_router, prefix="/api")
 app.include_router(plex_router, prefix="/api")
 app.include_router(slskd_router, prefix="/api")
+app.include_router(sources_router, prefix="/api")
 app.include_router(acquisition_router, prefix="/api")
 app.include_router(bank_router, prefix="/api")
 app.include_router(trash_router, prefix="/api")

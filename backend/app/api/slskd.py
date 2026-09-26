@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import os
 from functools import partial
 from pathlib import Path
 from typing import Annotated
@@ -46,6 +47,7 @@ from app.models.slskd import (
 )
 from app.slskd import service
 from app.slskd.config import SlskdConfig, SlskdConfigStore
+from app.wire import display_path
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +66,18 @@ def get_slskd_store() -> SlskdConfigStore:
     return SlskdConfigStore(directory / "slskd.json", env_defaults=env)
 
 
-def _to_settings(config: SlskdConfig, request: Request) -> SlskdSettings:
+async def _to_settings(config: SlskdConfig, request: Request) -> SlskdSettings:
     # ``False`` under a lifespan-less client, which never boots the webhook's
     # state: nothing has missed there.
     missed: bool = getattr(request.app.state, "slskd_last_download_missed", False)
+    # slskd's folder is the inbox the lifespan resolved, the one the webhook
+    # maps into. The lifespan-less client has none: an empty, missing folder.
+    inbox_dir: Path | None = getattr(request.app.state, "inbox_dir", None)
+    exists = False if inbox_dir is None else await inbox_read(partial(os.path.isdir, inbox_dir))
     return SlskdSettings(
         base_url=config.base_url,
+        folder="" if inbox_dir is None else display_path(inbox_dir),
+        folder_exists=exists,
         downloads_prefix=config.downloads_prefix,
         auto_import=config.auto_import,
         has_token=bool(config.token),
@@ -83,7 +91,7 @@ async def get_slskd_settings(
     request: Request,
     store: Annotated[SlskdConfigStore, Depends(get_slskd_store)],
 ) -> SlskdSettings:
-    return _to_settings(store.get(), request)
+    return await _to_settings(store.get(), request)
 
 
 @router.put("/slskd/settings")
@@ -100,7 +108,7 @@ async def put_slskd_settings(
         webhook_secret=body.webhook_secret,
         auto_import=body.auto_import,
     )
-    return _to_settings(config, request)
+    return await _to_settings(config, request)
 
 
 @router.post("/slskd/test")

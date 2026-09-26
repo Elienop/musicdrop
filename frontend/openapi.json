@@ -8515,6 +8515,223 @@
         "security": []
       }
     },
+    "/api/sources": {
+      "get": {
+        "tags": [
+          "sources"
+        ],
+        "summary": "List Sources",
+        "description": "The Folder sources, in the order added. Never slskd.",
+        "operationId": "list_sources_api_sources_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sources/folders": {
+      "post": {
+        "tags": [
+          "sources"
+        ],
+        "summary": "Add Folder Source",
+        "description": "Add a Folder source when a start on its folder would not be refused.",
+        "operationId": "add_folder_source_api_sources_folders_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FolderSourceCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceSummary"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Two folders display under the same name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The folder does not exist, is not a folder or cannot be read, or it is or holds the library or MusicDrop's own data, or it is or holds slskd's whole folder, or the request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sources/folders/{source_id}": {
+      "delete": {
+        "tags": [
+          "sources"
+        ],
+        "summary": "Remove Folder Source",
+        "description": "Remove a Folder source. The folder on disk is not touched.",
+        "operationId": "remove_folder_source_api_sources_folders__source_id__delete",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No Folder source has that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/acquisition/status": {
       "get": {
         "tags": [
@@ -13264,6 +13481,29 @@
         "title": "FolderListing",
         "description": "The folders directly inside ``path``, sorted ignoring case.\n\nAt most 500 are listed; ``total`` counts them all. Folders an import skips\n(beets' ``ignore`` and ``ignore_hidden``) are left out. ``parent`` is null at\n``/``. ``refusal`` is the sentence an import of ``path`` would be refused\nwith, or null."
       },
+      "FolderSourceCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "folder": {
+            "type": "string",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Folder"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "folder"
+        ],
+        "title": "FolderSourceCreate",
+        "description": "Body of ``POST /api/sources/folders``. Both fields are trimmed.\n\n``folder`` is a server folder, taken back the way ``POST /api/import`` takes\nits ``path``."
+      },
       "GroupDecision": {
         "properties": {
           "keep_album_id": {
@@ -16744,6 +16984,14 @@
             "type": "string",
             "title": "Base Url"
           },
+          "folder": {
+            "type": "string",
+            "title": "Folder"
+          },
+          "folder_exists": {
+            "type": "boolean",
+            "title": "Folder Exists"
+          },
           "downloads_prefix": {
             "type": "string",
             "title": "Downloads Prefix"
@@ -16768,6 +17016,8 @@
         "type": "object",
         "required": [
           "base_url",
+          "folder",
+          "folder_exists",
           "downloads_prefix",
           "auto_import",
           "has_token",
@@ -16775,7 +17025,7 @@
           "last_download_missed"
         ],
         "title": "SlskdSettings",
-        "description": "GET /slskd/settings \u2014 secrets are never returned, only ``has_*`` flags.\n\n``has_token`` / ``has_webhook_secret`` let the panel show a \"saved \u2014 enter to\nreplace\" placeholder for each write-only secret without ever exposing the\nvalue.\n\n``downloads_prefix`` is \"Path in slskd\": slskd's download folder as slskd\nsees it. A webhook folder inside it, by whole folder names, is read under\nslskd's folder as MusicDrop sees it; empty means both see the same path. A\nfolder outside it is refused, not re-rooted.\n\n``last_download_missed`` is true when the last slskd webhook that reached the\nmapping was refused because its folder did not map into slskd's folder, and\nfalse once one maps. Other event types, and deliveries while auto-import is\noff, do not count. It lives in memory: false after a restart until the next\nmiss."
+        "description": "GET /slskd/settings \u2014 secrets are never returned, only ``has_*`` flags.\n\n``has_token`` / ``has_webhook_secret`` let the panel show a \"saved \u2014 enter to\nreplace\" placeholder for each write-only secret without ever exposing the\nvalue.\n\n``downloads_prefix`` is \"Path in slskd\": slskd's download folder as slskd\nsees it. A webhook folder inside it, by whole folder names, is read under\nslskd's folder as MusicDrop sees it; empty means both see the same path. A\nfolder outside it is refused, not re-rooted.\n\n``last_download_missed`` is true when the last slskd webhook that reached the\nmapping was refused because its folder did not map into slskd's folder, and\nfalse once one maps. Other event types, and deliveries while auto-import is\noff, do not count. It lives in memory: false after a restart until the next\nmiss.\n\n``folder`` is slskd's folder as MusicDrop sees it (``MUSICDROP_INBOX_DIR``),\nread-only, and ``folder_exists`` is whether it is a folder right now."
       },
       "SlskdSettingsUpdate": {
         "properties": {
@@ -16885,6 +17135,52 @@
         ],
         "title": "SlskdWebhookEvent",
         "description": "The inbound slskd completion webhook payload (camelCase wire fields)."
+      },
+      "SourceList": {
+        "properties": {
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SourceSummary"
+            },
+            "type": "array",
+            "title": "Sources"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sources"
+        ],
+        "title": "SourceList",
+        "description": "Every Folder source, in the order added."
+      },
+      "SourceSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "folder": {
+            "type": "string",
+            "title": "Folder"
+          },
+          "exists": {
+            "type": "boolean",
+            "title": "Exists"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "folder",
+          "exists"
+        ],
+        "title": "SourceSummary",
+        "description": "One Folder source. ``folder`` is the path as it was added (display form);\n``exists`` is whether it is a folder right now."
       },
       "StartImportRequest": {
         "properties": {

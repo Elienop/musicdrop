@@ -30,9 +30,14 @@ class SlskdSettings(BaseModel):
     false once one maps. Other event types, and deliveries while auto-import is
     off, do not count. It lives in memory: false after a restart until the next
     miss.
+
+    ``folder`` is slskd's folder as MusicDrop sees it (``MUSICDROP_INBOX_DIR``),
+    read-only, and ``folder_exists`` is whether it is a folder right now.
     """
 
     base_url: str
+    folder: str
+    folder_exists: bool
     downloads_prefix: str
     auto_import: bool
     has_token: bool

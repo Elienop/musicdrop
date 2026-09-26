@@ -1,12 +1,6 @@
 import { PlexSettingsPanel } from "@/components/settings/PlexSettingsPanel";
-import { SlskdPanel } from "@/components/settings/SlskdPanel";
 
-/** Settings → Integrations: Plex and slskd connections. */
+/** Settings → Integrations: the Plex connection. slskd lives under Sources. */
 export function SettingsIntegrationsPage() {
-  return (
-    <div className="flex flex-col gap-6">
-      <PlexSettingsPanel />
-      <SlskdPanel />
-    </div>
-  );
+  return <PlexSettingsPanel />;
 }

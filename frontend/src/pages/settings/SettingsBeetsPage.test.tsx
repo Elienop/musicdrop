@@ -102,6 +102,8 @@ function slskdSettingsFixture(
     has_token: false,
     has_webhook_secret: false,
     last_download_missed: false,
+    folder: "/downloads",
+    folder_exists: true,
   };
 }
 

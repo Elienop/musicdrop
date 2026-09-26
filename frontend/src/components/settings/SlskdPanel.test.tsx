@@ -36,7 +36,7 @@ const TEST_URL = `${window.location.origin}/api/slskd/test`;
 const IMPORT_OP_URL = `${window.location.origin}/api/config/import-operation`;
 /** The auto-import switch's help, as the switch reads it. */
 const AUTO_IMPORT_HELP =
-  "When on, a finished slskd download imports itself into the library; uncertain matches are set aside for review.";
+  "A finished download imports itself. Anything it can’t finish waits in Review.";
 /** Path in slskd's help, named by slskd.yml's own key. */
 const HELP = "slskd’s download folder (directories.downloads), as slskd sees it.";
 
@@ -48,6 +48,8 @@ function settings(overrides: Record<string, unknown> = {}) {
     has_token: false,
     has_webhook_secret: false,
     last_download_missed: false,
+    folder: "/downloads",
+    folder_exists: true,
     ...overrides,
   };
 }
@@ -274,12 +276,86 @@ describe("SlskdPanel", () => {
     expect(ids.filter((id) => document.getElementById(id) === null)).toEqual([]);
   });
 
-  test("points to the Review page for the set-aside backlog (no inline activity)", async () => {
+  test("the auto-import help is a full sentence that links Review", async () => {
     server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
     renderWithProviders(<SlskdPanel />);
 
-    const link = await screen.findByRole("link", { name: /review/i });
+    // The link sits in the switch's own help; the footer line it replaced is
+    // gone, so this is the card's only Review link.
+    const link = await screen.findByRole("link", { name: "Review" });
     expect(link).toHaveAttribute("href", "/review");
+    expect(link.closest("p")?.textContent).toBe(AUTO_IMPORT_HELP);
+    expect(
+      screen.getByRole("switch", { name: "Auto-import completed downloads" }),
+    ).toHaveAccessibleDescription(AUTO_IMPORT_HELP);
+    expect(screen.queryByText(/Set-aside downloads/)).not.toBeInTheDocument();
+  });
+});
+
+describe("SlskdPanel: slskd's Folder", () => {
+  test("the first row shows slskd's folder read-only, and where it is set", async () => {
+    server.use(
+      http.get(SETTINGS, () =>
+        HttpResponse.json(settings({ folder: "/media/downloads/slskd" })),
+      ),
+    );
+    renderWithProviders(<SlskdPanel />);
+
+    const term = await screen.findByRole("term");
+    expect(term).toHaveTextContent("Folder");
+    const [value, help] = screen.getAllByRole("definition");
+    expect(value).toHaveTextContent("/media/downloads/slskd");
+    expect(help).toHaveTextContent("Set with MUSICDROP_INBOX_DIR.");
+    // Read-only: not a field anyone can type in.
+    expect(screen.queryByRole("textbox", { name: "Folder" })).toBeNull();
+    // First on the card: before Base URL in document order.
+    expect(
+      term.compareDocumentPosition(screen.getByLabelText(/base url/i)) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // Path in slskd's placeholder names this row, on the same card.
+    expect(screen.getByLabelText("Path in slskd")).toHaveAttribute(
+      "placeholder",
+      `Same as ${term.textContent}`,
+    );
+  });
+
+  test.each<[string, boolean, boolean, boolean]>([
+    ["missing, auto-import on", false, true, true],
+    ["missing, auto-import off", false, false, false],
+    ["there, auto-import on", true, true, false],
+  ])("Missing badge: %s", async (_, exists, autoImport, shown) => {
+    server.use(
+      http.get(SETTINGS, () =>
+        HttpResponse.json(
+          settings({ folder_exists: exists, auto_import: autoImport }),
+        ),
+      ),
+    );
+    renderWithProviders(<SlskdPanel />);
+
+    // Control: the row has rendered, so an absent badge is not a load race.
+    await screen.findByText("/downloads");
+    const badge = screen.queryByText("Missing");
+    expect(badge !== null).toBe(shown);
+    // Beside the path it is about.
+    if (badge !== null) expect(badge.closest("dd")).toHaveTextContent("/downloads");
+  });
+
+  test("the badge follows the switch before a Save", async () => {
+    server.use(
+      http.get(SETTINGS, () =>
+        HttpResponse.json(settings({ folder_exists: false, auto_import: false })),
+      ),
+    );
+    renderWithProviders(<SlskdPanel />);
+
+    const autoImport = await screen.findByRole("switch", {
+      name: "Auto-import completed downloads",
+    });
+    expect(screen.queryByText("Missing")).toBeNull();
+    await userEvent.click(autoImport);
+    expect(screen.getByText("Missing")).toBeInTheDocument();
   });
 });
 

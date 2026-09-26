@@ -82,6 +82,10 @@ class ImportSourceRefusedError(Exception):
 #: different question: what a MISSING store looks like.)
 ABSENT_ERRNOS: Final = frozenset({errno.ENOENT, errno.ENOTDIR, errno.ENAMETOOLONG})
 
+#: The start's refusal when nothing is at the path. Also what adding a Folder
+#: source says for a path that is missing or is not a folder.
+SOURCE_MISSING: Final = "That folder doesn’t exist."
+
 
 def unreadable_reason(exc: OSError) -> str:
     """The OS's own one-phrase summary of a refusal. Carries no path.
@@ -169,7 +173,7 @@ def missing_source_error(paths: list[str]) -> SourcePathMissingError | None:
         return None
     if refused is not None:
         return unreadable_source_error(refused)
-    return SourcePathMissingError("That folder doesn’t exist.")
+    return SourcePathMissingError(SOURCE_MISSING)
 
 
 class ImportRunner(Protocol):
