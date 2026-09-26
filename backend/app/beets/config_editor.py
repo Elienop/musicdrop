@@ -629,9 +629,12 @@ def read_naming(handle: LibraryHandle) -> NamingConfig:
     # ``replace`` is NOT merged. beets reads it from a single source
     # (``config["replace"].get(dict)`` -> confuse ``first()``), so a present
     # ``replace:`` block *wholly replaces* beets' defaults. Show the explicit
-    # rows verbatim when present, else the bundled defaults. (An explicit empty
-    # ``replace: {}`` is indistinguishable from absent here -> both show the
-    # defaults; an accepted rare-case simplification.)
+    # rows verbatim when present, else the bundled defaults. An explicit empty
+    # ``replace: {}`` shows the defaults too: beets reads it as no rules, and
+    # ``util.sanitize_path`` then falls back to its own ``CHAR_REPLACE``
+    # (``replacements or CHAR_REPLACE``), which keeps the path-separator rule.
+    # The nine shown are close to those six, not identical (``util/__init__.py``
+    # ``CHAR_REPLACE``).
     replace_raw = doc.get("replace")
     replace_map = replace_raw if isinstance(replace_raw, dict) else {}
     if not replace_map:
