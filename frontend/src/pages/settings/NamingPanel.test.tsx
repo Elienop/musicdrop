@@ -387,8 +387,8 @@ test("with beets' rules unread, Add recommended rules still puts the typographic
   expect(replaceRows()).toEqual([...TYPOGRAPHIC, amp]);
 });
 
-// Save drops a draft with no pattern row, so config.yaml loses its replace:
-// block and beets uses its own rules again: nothing is missing.
+// Save drops an empty block, and beets then uses its own rules: a draft with
+// no pattern row is missing nothing.
 test("no warning once every row of the old starter is deleted", async () => {
   await renderRules(TYPOGRAPHIC);
   expect(rulesWarning()).toBe(WARN_WITH_RISK);
@@ -398,6 +398,10 @@ test("no warning once every row of the old starter is deleted", async () => {
     );
   }
   expect(replaceRows()).toEqual([]);
+  expect(rulesWarning()).toBeNull();
+
+  await addRecommended();
+  expect(replaceRows()).toEqual(STARTER);
   expect(rulesWarning()).toBeNull();
 });
 
@@ -413,21 +417,6 @@ test("no warning while every row left has a blank pattern", async () => {
   );
   await userEvent.type(screen.getByLabelText("Replace value 1"), "_");
   expect(replaceRows()).toEqual([{ pattern: "", replacement: "_" }]);
-  expect(rulesWarning()).toBeNull();
-});
-
-// A read with no rows is an empty `replace: {}` on disk: beets then uses no
-// rules at all, and Save stays off, so the file stands.
-test("a read with no replace rows warns, naming the risk", async () => {
-  await renderRules([]);
-  expect(replaceRows()).toEqual([]);
-  expect(rulesWarning()).toBe(WARN_WITH_RISK);
-});
-
-test("Add recommended rules on a read with no replace rows gives the starter's block", async () => {
-  await renderRules([]);
-  await addRecommended();
-  expect(replaceRows()).toEqual(STARTER);
   expect(rulesWarning()).toBeNull();
 });
 

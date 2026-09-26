@@ -467,7 +467,6 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
         setRows={updateReplace}
         errors={replaceErrors}
         beetsRules={initial.beets_replace}
-        readHadNoRows={initial.replace.length === 0}
       />
 
       <div className="border-border mt-2 flex flex-wrap items-center gap-3 border-t pt-3">
@@ -637,25 +636,21 @@ function ReplaceEditor({
   setRows,
   errors,
   beetsRules,
-  readHadNoRows,
 }: Readonly<{
   rows: ReplaceRow[];
   setRows: React.Dispatch<React.SetStateAction<ReplaceRow[]>>;
   errors: ReplaceError[];
   /** beets' own rules, from the naming read; empty when it could not read them. */
   beetsRules: ReplaceRuleInput[];
-  /** The read sent no rows: config.yaml holds an empty `replace:` block. */
-  readHadNoRows: boolean;
 }> ) {
   const errorAt = (i: number) => errors.find((e) => e.index === i);
 
-  // The warning describes the rules beets would use. A draft with no pattern
-  // row saves no replace: block, so beets uses its own rules again; the one
-  // exception is a read of an empty block, which Save leaves standing (the
-  // draft matches it, so Save is off) and beets then uses no rules at all.
-  // Compared by exact pattern, like the button: a row with beets' pattern and
-  // another replacement is the user's choice, not a missing rule.
-  const keepsBlock = readHadNoRows || rows.some((r) => r.pattern !== "");
+  // The warning describes the rules beets would use. Save drops an empty
+  // block, and beets then uses its own rules, so a draft with no pattern row
+  // is missing nothing. Compared by exact pattern, like the button: a row with
+  // beets' pattern and another replacement is the user's choice, not a
+  // missing rule.
+  const keepsBlock = rows.some((r) => r.pattern !== "");
   const present = new Set(rows.map((r) => r.pattern));
   const missing = keepsBlock
     ? beetsRules.filter((r) => !present.has(r.pattern))
