@@ -25,7 +25,7 @@ import:
 # File-path replace rules. A replace: block REPLACES beets' built-in rules
 # (beets reads one source, config["replace"].get(dict)), so beets' own rules
 # are listed below, verbatim and in beets' order (beets/config_default.yaml).
-# Keep them: '[\\/]' is what stops an empty artist or album from making an
+# Keep them: '[\\/]' is what stops an album with no artist tag from making an
 # absolute path that files the album outside your library.
 #
 # The first five sanitize MusicBrainz typographic Unicode. These characters
