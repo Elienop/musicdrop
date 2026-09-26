@@ -450,9 +450,9 @@ class ImportJobRegistry:
                 self._job.phase = ImportPhase.done
                 finished = True
                 landed = self._fully_landed_sources(self._job)
-        # Recorded BEFORE the event below: every open tab refetches "Not imported
-        # yet" on it (``inbox-items`` is in the frontend's ``LIBRARY_CONTENT_KEYS``)
-        # and must already see the folder gone.
+        # Recorded BEFORE the event below: an open Review page refetches "Not
+        # imported yet" on it (``inbox-items`` is in the frontend's
+        # ``LIBRARY_CONTENT_KEYS``) and must already see the folder gone.
         if landed:
             self._record_imported(landed)
         # Emit OUTSIDE the lock: a finished import (manual / inbox / bank-apply

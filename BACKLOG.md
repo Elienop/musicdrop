@@ -1988,6 +1988,11 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     "0 imported" (`ReviewPage.tsx` ~257, ~694).
   - At 360 px a bank row's title is cut to "Boards…" beside the "Uncertain match" badge
     (`BankSection.tsx` ~69, ~547-556). Older than this branch, but S2 brings slskd rows into it.
+  - Under a refused layout a bank apply waits silently: each 1 s pass claims the row, walks the
+    folder, then puts it back to `queued` with no reason (`bank/apply_runner.py` ~471-478). The
+    drain now names the refusal (`acquisition/queue.py` ~199-201) — the precedent. Not in the
+    shared gate: the drain sets `_current` before `_wait_for_gate` (`queue.py` ~167-170), so a
+    gate refusal would show "Importing <folder>" with no sentence.
   - Installs since v0.15.0 (PR #85) keep the starter's old five-rule `replace:` block, which
     REPLACES beets' own rules (beets reads one source, `library/library.py` ~64), `'[\\/]'`
     included: an untagged or artist-less album renders an absolute subpath and files OUTSIDE
