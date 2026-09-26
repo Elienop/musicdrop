@@ -82,6 +82,39 @@ def test_only_folders_are_listed_and_a_link_to_one_counts(tmp_path: Path) -> Non
     assert body["folders"][0]["path"] == str(tmp_path / "Album")
 
 
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param("bad", id="loops-ELOOP"),
+        pytest.param("../file.txt/sub", id="through-a-file-ENOTDIR"),
+        pytest.param("x" * 300, id="too-long-ENAMETOOLONG"),
+        pytest.param(
+            "../locked/x",
+            id="into-a-locked-folder-EACCES",
+            marks=pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 folder"),
+        ),
+    ],
+)
+def test_a_link_whose_stat_fails_is_not_a_folder_and_the_rest_still_list(
+    tmp_path: Path, target: str
+) -> None:
+    """A link beets' ``os.path.isdir`` calls a file never fails or moves the listing.
+
+    Each target makes ``stat`` raise (not "missing"): the folder beside it still
+    lists, at its own path, with 200, rather than a 422 or its parent.
+    """
+    folder = _dirs(tmp_path, "F/Album", "locked") / "F"
+    (tmp_path / "file.txt").write_bytes(b"x")
+    (folder / "bad").symlink_to(target)
+    (tmp_path / "locked").chmod(0o000)
+    try:
+        body = _list(folder)
+    finally:
+        (tmp_path / "locked").chmod(0o755)
+
+    assert (body["path"], _names(body), body["total"]) == (str(folder), ["Album"], 1)
+
+
 def test_beets_default_ignore_hides_what_an_import_skips(tmp_path: Path) -> None:
     """Invariant 2, with beets' defaults: ``.*``, ``*~``, ``lost+found`` are left out.
 

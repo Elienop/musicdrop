@@ -3,8 +3,9 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { delay, http, HttpResponse } from "msw";
 import { useRef, useState } from "react";
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, onTestFinished, test, vi } from "vitest";
 
+import { createAppQueryClient } from "@/api/queryClient";
 import type { FolderEntry, FolderListing } from "@/api/useFolders";
 import { FolderBrowserDialog } from "@/components/folders/FolderBrowserDialog";
 import { server } from "@/test/msw-server";
@@ -32,6 +33,15 @@ function listing(
     typeof n === "string" ? entry(path, n) : entry(path, n[0], n[1]),
   );
   return { path, parent, folders, total: folders.length, refusal };
+}
+
+/** `/media/big`, over the cap: the first 500 of 2,140 folders. */
+function bigListing(refusal: string | null = null): FolderListing {
+  const names = Array.from(
+    { length: 500 },
+    (_, i) => `f${String(i).padStart(3, "0")}`,
+  );
+  return { ...listing("/media/big", "/media", names, refusal), total: 2140 };
 }
 
 /** A small tree. `/media` holds the library, so it and `/` are refused. */
@@ -310,6 +320,40 @@ describe("FolderBrowserDialog: moving around", () => {
     expect(asked).toHaveLength(before);
   });
 
+  test("Enter with nothing after the last / opens nothing", async () => {
+    // The box names the open folder itself; the first row is not what was typed.
+    const asked = serveTree();
+    const user = userEvent.setup();
+    renderWithProviders(<Host initial="/media/downloads" />);
+    const dialog = await openBrowser(user);
+    await within(dialog).findByRole("button", { name: "Artist - Album" });
+    const before = asked.length;
+
+    await user.click(pathBox(dialog));
+    await user.keyboard("{Enter}");
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(asked).toHaveLength(before);
+    expect(pathBox(dialog)).toHaveValue("/media/downloads/");
+  });
+
+  test("two folders that display alike are two rows, each keyed apart", async () => {
+    // Undecodable names both read as U+FFFD, so their paths repeat too.
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    onTestFinished(() => error.mockRestore());
+    serveTree({
+      "/media/odd": listing("/media/odd", "/media", ["�", "�"]),
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<Host initial="/media/odd" />);
+    const dialog = await openBrowser(user);
+
+    expect(
+      await within(dialog).findAllByRole("button", { name: "�" }),
+    ).toHaveLength(2);
+    expect(error.mock.calls.flat().join(" ")).not.toMatch(/same key/);
+  });
+
   test("badges name the library and MusicDrop's folders, and nothing else", async () => {
     serveTree();
     const user = userEvent.setup();
@@ -331,12 +375,7 @@ describe("FolderBrowserDialog: moving around", () => {
   });
 
   test("over the cap, the line under the list says how many there are", async () => {
-    const big = listing(
-      "/media/big",
-      "/media",
-      Array.from({ length: 500 }, (_, i) => `f${String(i).padStart(3, "0")}`),
-    );
-    serveTree({ "/media/big": { ...big, total: 2140 } });
+    serveTree({ "/media/big": bigListing() });
     const user = userEvent.setup();
     renderWithProviders(<Host initial="/media/big" />);
     const dialog = await openBrowser(user);
@@ -356,6 +395,87 @@ describe("FolderBrowserDialog: moving around", () => {
     await within(dialog).findByRole("button", { name: "Artist - Album" });
 
     expect(within(dialog).queryByText(/^Showing/)).not.toBeInTheDocument();
+  });
+
+  test("over the cap, the empty line says only the first ones were searched", async () => {
+    serveTree({ "/media/big": bigListing() });
+    const user = userEvent.setup();
+    renderWithProviders(<Host initial="/media/big" />);
+    const dialog = await openBrowser(user);
+    await within(dialog).findByRole("button", { name: "f000" });
+
+    await user.type(pathBox(dialog), "zzz");
+
+    expect(
+      within(dialog).getByText("None of the first 500 match “zzz”."),
+    ).toBeVisible();
+  });
+
+  test("over the cap on a refused folder, the line holds the refusal", async () => {
+    serveTree({ "/media/big": bigListing(LIBRARY_PARENT) });
+    const user = userEvent.setup();
+    renderWithProviders(<Host initial="/media/big" />);
+    const dialog = await openBrowser(user);
+
+    expect(await within(dialog).findByText(LIBRARY_PARENT)).toBeVisible();
+    expect(within(dialog).queryByText(/^Showing/)).not.toBeInTheDocument();
+  });
+
+  test("the line under the list stays, empty, when the refusal goes", async () => {
+    // So the centred dialog keeps its height. jsdom has no layout: the
+    // reserved line is the `min-h-lh` class (browser-checked at 360×560).
+    serveTree();
+    const user = userEvent.setup();
+    renderWithProviders(<Host initial="/media" />);
+    const dialog = await openBrowser(user);
+    const line = await within(dialog).findByText(LIBRARY_PARENT);
+
+    await user.click(within(dialog).getByRole("button", { name: "downloads" }));
+    await within(dialog).findByRole("button", { name: "Artist - Album" });
+
+    expect(line).toBeInTheDocument();
+    expect(line).toBeEmptyDOMElement();
+    expect(line).toHaveClass("min-h-lh");
+  });
+});
+
+describe("FolderBrowserDialog: asking the server", () => {
+  test("a refusal shows after one request, not after a retry", async () => {
+    // The app's own client, whose default retries once, a second later.
+    const asked = serveTree();
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={createAppQueryClient()}>
+        <Host initial="/media/downloads/Locked" />
+      </QueryClientProvider>,
+    );
+    const dialog = await openBrowser(user);
+
+    expect(
+      await within(dialog).findByRole("alert", {}, { timeout: 3000 }),
+    ).toHaveTextContent(UNREADABLE);
+    expect(asked).toEqual(["/media/downloads/Locked"]);
+  });
+
+  test("closing the dialog stops the request it was waiting on", async () => {
+    let signal: AbortSignal | undefined;
+    server.use(
+      http.get(FOLDERS_URL, async ({ request }) => {
+        signal = request.signal;
+        await new Promise<void>((resolve) => {
+          request.signal.addEventListener("abort", () => resolve());
+        });
+        return HttpResponse.error();
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<Host initial="/mnt/hung" />);
+    const dialog = await openBrowser(user);
+    await waitFor(() => expect(signal).toBeDefined());
+
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(signal?.aborted).toBe(true));
   });
 });
 
@@ -499,6 +619,27 @@ describe("FolderBrowserDialog: using a folder", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
+  test("Use waits while the box names a folder that failed", async () => {
+    // The list on screen is the last good folder; Use would send that one
+    // while the box shows another.
+    serveTree();
+    const onUse = vi.fn();
+    const user = userEvent.setup();
+    renderWithProviders(<Host initial="/media/downloads" onUse={onUse} />);
+    const dialog = await openBrowser(user);
+    await within(dialog).findByRole("button", { name: "Locked" });
+
+    await user.type(pathBox(dialog), "Locked/");
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      UNREADABLE,
+    );
+    expect(pathBox(dialog)).toHaveValue("/media/downloads/Locked/");
+    expect(useButton(dialog)).toHaveAttribute("aria-disabled", "true");
+    await user.click(useButton(dialog));
+
+    expect(onUse).not.toHaveBeenCalled();
+  });
+
   test("Use hands the listed folder to the field's setter and focuses the field", async () => {
     serveTree();
     const onUse = vi.fn();
@@ -550,5 +691,31 @@ describe("FolderBrowserDialog: using a folder", () => {
 
     const trigger = screen.getByRole("button", { name: "Browse folders" });
     await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  test("reopening, with the listing cached, focuses the first row again", async () => {
+    // The app's client keeps the listing fresh, so it lands on the first
+    // render, while the trigger still has focus and before Radix moves it in.
+    serveTree();
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={createAppQueryClient()}>
+        <Host initial="/media/downloads" />
+      </QueryClientProvider>,
+    );
+    let dialog = await openBrowser(user);
+    let first = await within(dialog).findByRole("button", {
+      name: "Artist - Album",
+    });
+    await waitFor(() => expect(first).toHaveFocus());
+    await user.click(useButton(dialog));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+
+    dialog = await openBrowser(user);
+
+    first = within(dialog).getByRole("button", { name: "Artist - Album" });
+    await waitFor(() => expect(first).toHaveFocus());
   });
 });

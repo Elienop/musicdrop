@@ -34,14 +34,19 @@ export function folderListingKey(path: string | null) {
  * also stored under its own path, because the browser then shows that path in
  * its box and asks for it; without the copy the same listing is fetched twice
  * on every open.
+ *
+ * No retry: a 409 or 422 is the folder's answer, and a second ask only shows
+ * it a second later. The request carries TanStack's `signal`, so closing the
+ * dialog stops waiting on a folder that hangs (a dead mount).
  */
 export function useFolderListing(path: string | null) {
   const queryClient = useQueryClient();
   return useQuery<FolderListing, Error>({
     queryKey: folderListingKey(path),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const result = await client.GET("/api/folders", {
         params: { query: path === null ? {} : { path } },
+        signal,
       });
       throwIfRefused(result);
       const listing = unwrap(result, FOLDER_LIST_FAILED);
@@ -50,5 +55,6 @@ export function useFolderListing(path: string | null) {
       }
       return listing;
     },
+    retry: false,
   });
 }

@@ -13,7 +13,7 @@ decides which folders an import skips, so the browser hides the same ones:
   and takes no ``stat`` (``beets/util/hidden.py:49-51``);
 * the order the walk sorts a level in, ``bytes.lower`` (``util/__init__.py:256-258``);
 * and ``util.normpath``, which the import session maps over every source
-  (``beets/importer/session.py:78``), so a typed path lists the folder a start
+  (``beets/importer/session.py:79``), so a typed path lists the folder a start
   on it would walk.
 """
 

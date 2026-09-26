@@ -264,8 +264,11 @@ class ImportJobRegistry:
 
         The folder browser's refusal line and badges read this, so they name the
         same folders the start refuses, including after an Apply re-attaches.
-        ``None`` before ``attach_library``, or when a test attached no layout.
-        Blocking: it stats each row's chain.
+        ``None`` before ``attach_library``, when a test attached no layout, or
+        after an Apply loaded a refused store layout (it attaches no Trash
+        folders): the browser then shows no badges and no refusal line, while
+        ``POST /api/import`` still answers 503 with Apply's sentence
+        (``LibraryRefusedError``). Blocking: it stats each row's chain.
         """
         if (
             self._lib is None

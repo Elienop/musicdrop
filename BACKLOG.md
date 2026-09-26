@@ -1893,10 +1893,24 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     holds MusicDrop's own data.
   - Up to 500 rows are tab stops before `Use this folder`; a one-stop list with arrow keys is a
     new key handler.
-  - confuse's first read of a freshly reset `beets.config` is not thread-safe: in the suite,
-    three listings on a just-reset config saw `ignore not found` (a 500). The app reads the
-    config at boot, so only a listing inside an Apply's reload window could meet it; not measured
-    against a real Apply. Every other off-loop `beets.config` read shares the window.
+  - Test-only: confuse's first read of a freshly CLEARED `beets.config` is not thread-safe, and
+    only the suite clears it (`reset_beets_globals()`); three listings on a just-reset config saw
+    `ignore not found` (a 500). Production never meets it: Apply passes `keep_config=True` and
+    swaps the config in one assignment (`_install_config`); 0 errors across 2,488 listing reads
+    during 100 real Applies (security seat, 2026-09-26). The one production residual: the walk
+    rules are two reads (`import_walk.walk_rules`), so a listing during an Apply could in theory
+    pair the old `ignore` with the new `ignore_hidden`. Not observed.
+  - A path's edge whitespace is stripped (`folders._start_folder`, as the start strips,
+    `models/import_api.py` `strip_whitespace`, and as the page strips), so a folder named
+    `Album ` (trailing space; slskd keeps those on Linux) opens its sibling `Album`, and with no
+    such sibling it, or one ending in a no-break space, lists its parent. A wrong folder, never a
+    refused one. The fix changes how
+    the start and the page strip too. Not built.
+  - After Apply loads a refused store layout, the registry has no Trash folders attached
+    (`registry.source_rows()` is `None`), so the browser shows no badges and no refusal line; the
+    start still fails closed with 503 and Apply's sentence.
+  - Over the 500 cap, the dialog's narrowing searches only the first 500 (the dialog says so). A
+    server-side filter would be the fix; beets has no listing API to lean on. Not built.
 
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth

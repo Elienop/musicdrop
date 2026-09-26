@@ -10,6 +10,7 @@ import {
 
 import {
   type FolderBadge,
+  type FolderEntry,
   type FolderListing,
   useFolderListing,
 } from "@/api/useFolders";
@@ -207,7 +208,15 @@ function FolderBrowser({
       entry.name.toLowerCase().includes(filter.toLowerCase()),
     ) ?? [];
   const refusal = shown?.refusal ?? null;
-  const useBlocked = loading || shown === undefined || refusal !== null;
+  // Use takes the listed folder, so only while the box names it: after a
+  // typed path fails, the box shows that path and the list is the last one.
+  const useBlocked = loading || !boxNamesShown || refusal !== null;
+  // The line under the list: the refusal, else how many are not shown.
+  const note =
+    refusal ??
+    (shown !== undefined && shown.total > shown.folders.length
+      ? `Showing ${shown.folders.length.toLocaleString("en-US")} of ${shown.total.toLocaleString("en-US")}. Type a path to open it.`
+      : null);
 
   function openFolder(path: string, next: FocusNext) {
     focusNext.current = next;
@@ -230,8 +239,11 @@ function FolderBrowser({
     e.preventDefault();
     const first = rows[0];
     // Only rows of the folder the box names: after a failed path, the list
-    // on screen is the last one and is not what was typed.
-    if (loading || !boxNamesShown || first === undefined) return;
+    // on screen is the last one and is not what was typed. And only a typed
+    // name: at `/media/downloads/` the box names the folder already open.
+    if (loading || !boxNamesShown || filter === "" || first === undefined) {
+      return;
+    }
     // Typing goes on in the box, so focus stays there.
     openFolder(first.path, null);
   }
@@ -297,19 +309,15 @@ function FolderBrowser({
             />
           )}
         </div>
-        {shown !== undefined && shown.total > shown.folders.length && (
-          <p className="text-muted-foreground text-xs">
-            Showing {shown.folders.length.toLocaleString("en-US")} of{" "}
-            {shown.total.toLocaleString("en-US")}. Type a path to open it.
-          </p>
-        )}
-      </div>
-
-      {refusal !== null && (
-        <p id={refusalId} className="text-muted-foreground text-xs break-words">
-          {refusal}
+        {/* Always there, a line tall when empty, so the dialog (centred)
+            keeps its height as the refusal and the cap line come and go. */}
+        <p
+          id={refusalId}
+          className="text-muted-foreground min-h-lh text-xs break-words"
+        >
+          {note}
         </p>
-      )}
+      </div>
 
       <DialogFooter>
         <DialogClose asChild>
@@ -338,9 +346,10 @@ function FolderBrowser({
 /**
  * Focus when a listing lands, per `focusNext`: the first folder row (the Up
  * row when there is none), or the row the user came up from. Only while focus
- * is still where the dialog left it: on the content (just opened), on the
- * body (the clicked row left with its folder), or in the list. Never out of
- * the path box.
+ * is still where the dialog left it: outside the dialog (the body, after the
+ * clicked row left with its folder, or still the trigger when a cached
+ * listing lands before Radix moves focus in), on the content (just opened),
+ * or in the list. Never out of the path box or the footer.
  */
 function useFocusWhenListed(
   shown: FolderListing | undefined,
@@ -354,10 +363,12 @@ function useFocusWhenListed(
     if (shown === undefined || target === null || list === null) return;
     focusNext.current = null;
     const active = document.activeElement;
+    const content = contentRef.current;
     const untouched =
       active === null ||
-      active === document.body ||
-      active === contentRef.current ||
+      content === null ||
+      !content.contains(active) ||
+      active === content ||
       list.contains(active);
     if (!untouched) return;
     const buttons = [...list.querySelectorAll<HTMLButtonElement>("button")];
@@ -416,8 +427,8 @@ function FolderRows({
           </RowButton>
         </li>
       )}
-      {rows.map((entry) => (
-        <li key={entry.path}>
+      {withKeys(rows).map(({ entry, key }) => (
+        <li key={key}>
           <RowButton
             path={entry.path}
             onClick={() => onOpen(entry.path, { kind: "first" })}
@@ -438,14 +449,37 @@ function FolderRows({
       {rows.length === 0 && (
         <li className="flex flex-1 items-center justify-center px-3 py-2">
           <p className="text-muted-foreground text-center text-sm break-words">
-            {listing.folders.length > 0
-              ? `No folders match “${filter}”.`
-              : "No subfolders."}
+            {emptyLine(listing, filter)}
           </p>
         </li>
       )}
     </ul>
   );
+}
+
+/** The line when no row shows. Over the cap only the first rows came, so
+ * narrowing searched only those. */
+function emptyLine(listing: FolderListing, filter: string): string {
+  const listed = listing.folders.length;
+  if (listed === 0) return "No subfolders.";
+  if (listing.total > listed) {
+    return `None of the first ${listed.toLocaleString("en-US")} match “${filter}”.`;
+  }
+  return `No folders match “${filter}”.`;
+}
+
+/** Each row with a key of its own. Two folders can display alike (names that
+ * are not UTF-8 read the same), so the path alone repeats; a repeat gets its
+ * count after it. */
+function withKeys(
+  rows: FolderListing["folders"],
+): { entry: FolderEntry; key: string }[] {
+  const seen = new Map<string, number>();
+  return rows.map((entry) => {
+    const count = (seen.get(entry.path) ?? 0) + 1;
+    seen.set(entry.path, count);
+    return { entry, key: count === 1 ? entry.path : `${entry.path}\u0000${count}` };
+  });
 }
 
 /** One row of the list: a plain button, not the Button primitive, whose base

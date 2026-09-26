@@ -75,18 +75,31 @@ def _start_folder(path: str | None) -> bytes:
     return walked_path(resolve_posted_path(typed))
 
 
+def _is_folder(entry: os.DirEntry[bytes]) -> bool:
+    """beets' walk's answer for one entry: ``os.path.isdir``, False on any ``OSError``.
+
+    ``DirEntry.is_dir()`` answers from the directory entry's own type, so only
+    a symlink costs a ``stat``; a link to a folder counts as one. Unlike
+    ``isdir`` it RAISES for a link that loops, runs through a file, points into
+    a locked folder or names too long a target, and that error would fail or
+    redirect the whole listing. beets calls such an entry a file.
+    """
+    try:
+        return entry.is_dir()
+    except OSError:
+        return False
+
+
 def _child_folders(folder: bytes, rules: WalkRules) -> list[bytes]:
     """``folder``'s direct child folders an import would walk, in the walk's order.
 
-    The name test runs first and needs no syscall. ``DirEntry.is_dir()`` then
-    answers from the directory entry's own type; only a symlink costs a
-    ``stat``, and a link to a folder counts as one, as it does for beets' walk.
+    The name test runs first and needs no syscall; then ``_is_folder``.
     """
     with os.scandir(folder) as entries:
         names = [
             entry.name
             for entry in entries
-            if not skipped_by_the_walk(folder, entry.name, rules) and entry.is_dir()
+            if not skipped_by_the_walk(folder, entry.name, rules) and _is_folder(entry)
         ]
     names.sort(key=lambda name: (walk_order(name), name))
     return names
