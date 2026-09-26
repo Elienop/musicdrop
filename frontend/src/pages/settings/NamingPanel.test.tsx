@@ -281,6 +281,15 @@ test("no warning on an install with no replace: block (its rows are beets' rules
   expect(rulesWarning()).toBeNull();
 });
 
+test("a row with beets' pattern and the user's own replacement counts as present", async () => {
+  const own = STARTER.map((r) =>
+    r.pattern === SEPARATOR.pattern ? { ...r, replacement: "-" } : r,
+  );
+  await renderRules(own);
+  expect(replaceRows()).toEqual(own);
+  expect(rulesWarning()).toBeNull();
+});
+
 test("no warning when beets' own rules could not be read", async () => {
   await renderRules(TYPOGRAPHIC, []);
   expect(replaceRows()).toEqual(TYPOGRAPHIC);
