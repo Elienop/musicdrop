@@ -1,6 +1,6 @@
 // frontend/src/pages/settings/NamingPanel.tsx
 import { useQueryClient } from "@tanstack/react-query";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   applyRecoveryHint,
@@ -25,7 +25,6 @@ import { SettingsSection } from "@/components/system/SettingsSection";
 import { StatusBanner } from "@/components/system/StatusBanner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
 import {
   APPLY_FALLBACK,
   saveFailureDetail,
@@ -63,8 +62,8 @@ const RECOMMENDED_REPLACE_RULES: ReplaceRuleInput[] = [
 ];
 
 /** beets' path-separator rule (beets/config_default.yaml, `'[\\/]': _`). Only
- * the warning's wording reads it: without it, an album with no artist or album
- * tag renders an absolute path and is filed outside the library. beets' rules
+ * the warning's wording reads it: without it, an album with no artist tag
+ * renders an absolute path and is filed outside the library. beets' rules
  * themselves come from the naming read, never from here. */
 const PATH_SEPARATOR_PATTERN = String.raw`[\\/]`;
 
@@ -468,6 +467,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
         setRows={updateReplace}
         errors={replaceErrors}
         beetsRules={initial.beets_replace}
+        readHadNoRows={initial.replace.length === 0}
       />
 
       <div className="border-border mt-2 flex flex-wrap items-center gap-3 border-t pt-3">
@@ -637,42 +637,32 @@ function ReplaceEditor({
   setRows,
   errors,
   beetsRules,
+  readHadNoRows,
 }: Readonly<{
   rows: ReplaceRow[];
   setRows: React.Dispatch<React.SetStateAction<ReplaceRow[]>>;
   errors: ReplaceError[];
   /** beets' own rules, from the naming read; empty when it could not read them. */
   beetsRules: ReplaceRuleInput[];
+  /** The read sent no rows: config.yaml holds an empty `replace:` block. */
+  readHadNoRows: boolean;
 }> ) {
   const errorAt = (i: number) => errors.find((e) => e.index === i);
 
+  // The warning describes the rules beets would use. A draft with no pattern
+  // row saves no replace: block, so beets uses its own rules again; the one
+  // exception is a read of an empty block, which Save leaves standing (the
+  // draft matches it, so Save is off) and beets then uses no rules at all.
   // Compared by exact pattern, like the button: a row with beets' pattern and
   // another replacement is the user's choice, not a missing rule.
+  const keepsBlock = readHadNoRows || rows.some((r) => r.pattern !== "");
   const present = new Set(rows.map((r) => r.pattern));
-  const missing = beetsRules.filter((r) => !present.has(r.pattern));
+  const missing = keepsBlock
+    ? beetsRules.filter((r) => !present.has(r.pattern))
+    : [];
   const separatorMissing = missing.some(
     (r) => r.pattern === PATH_SEPARATOR_PATTERN,
   );
-
-  // The rows a press found complete. The "already in place" line shows until
-  // the rows change, so a press that changes nothing is never a dead click.
-  // `seq` counts those presses: the line's text is keyed by it, so a repeat
-  // press gets new text nodes and is announced again.
-  const [complete, setComplete] = useState<{
-    rows: ReplaceRow[];
-    seq: number;
-  } | null>(null);
-  const nothingToAdd = complete !== null && complete.rows === rows;
-
-  function addRecommended() {
-    const next = withRecommendedRules(rows, beetsRules);
-    if (next.length === rows.length && next.every((r, i) => r === rows[i])) {
-      // Not a draft edit: Save stays off and a Save failure stays shown.
-      setComplete((c) => ({ rows, seq: (c?.seq ?? 0) + 1 }));
-      return;
-    }
-    setRows(next);
-  }
 
   return (
     <div className="flex flex-col gap-2">
@@ -701,7 +691,7 @@ function ReplaceEditor({
               <span aria-hidden="true">→</span>
               <Input
                 aria-label={`Replace value ${i + 1}`}
-                placeholder="replacement"
+                placeholder="nothing"
                 value={row.replacement}
                 onChange={(e) =>
                   setRows((rs) =>
@@ -733,16 +723,18 @@ function ReplaceEditor({
           </div>
         );
       })}
-      {/* Beside the button it names. Only the separator rule's absence can
-          file an album outside the library, so only then does it say so. */}
+      {/* Beside the button it names. The risk clause covers the common case,
+          the separator rule: without it an album with no artist tag is filed
+          outside the library. (An artist tag of exactly ".." also escapes
+          without beets' edge-period rules; the clause does not name that.) */}
       {missing.length > 0 && (
         <StatusBanner tone="warning" icon={Warning}>
           <p>
             Some of beets&rsquo; own replace rules are missing
             {separatorMissing &&
-              ", so an album with no artist or album tag can be filed outside your library"}
-            . <span className="font-medium">Add recommended rules</span> puts
-            them back.
+              ", so an album with no artist tag can be filed outside your library"}
+            . <span className="font-medium">Add recommended rules</span>, then
+            Save.
           </p>
         </StatusBanner>
       )}
@@ -762,33 +754,16 @@ function ReplaceEditor({
         <Button
           variant="outline"
           size="sm"
-          title={
-            "Maps look-alike typographic characters (‐ – — ’ “ …) " +
-            "to ASCII, then restores beets’ own rules"
+          onClick={() =>
+            setRows((rs) => withRecommendedRules(rs, beetsRules))
           }
-          onClick={addRecommended}
         >
           <Add className="size-4" aria-hidden="true" /> Add recommended rules
         </Button>
-        {/* Mounted empty so the line is announced when it fills; sr-only while
-            empty keeps it out of the row's flex gaps. */}
-        <output
-          className={cn(
-            "text-muted-foreground text-sm",
-            !nothingToAdd && "sr-only",
-          )}
-        >
-          {nothingToAdd && (
-            <Fragment key={complete.seq}>
-              Recommended rules are already in place.
-            </Fragment>
-          )}
-        </output>
       </div>
       <p className="text-muted-foreground text-xs">
-        Recommended rules map look-alike typographic characters (curly quotes,
-        en/em dashes, the non-breaking hyphen, ellipsis) to ASCII so metadata
-        can&rsquo;t mint visually-identical twin folders, then restore
+        Recommended rules turn look-alike characters (curly quotes, dashes,
+        ellipsis) into ASCII so tags can&rsquo;t make twin folders, and include
         beets&rsquo; own rules.
       </p>
     </div>

@@ -176,10 +176,10 @@ test("pre-fills with beets' effective defaults (no-override case)", async () => 
 // ---- beets' own replace rules: the warning and "Add recommended rules" ----
 //
 // A replace: block REPLACES beets' built-in rules, so an install made from the
-// old five-rule starter lacks '[\\/]': _ and files an album with no artist or
-// album tag outside the library. The read sends beets' own rules
-// (`beets_replace`); the panel warns while the rows leave any out, and the
-// button restores them after the typographic rules.
+// old five-rule starter lacks '[\\/]': _ and files an album with no artist tag
+// outside the library. The read sends beets' own rules (`beets_replace`); the
+// panel warns while Save would keep any of them out, and the button restores
+// them after the typographic rules.
 
 /** MusicDrop's five typographic rules, in their curated order. Patterns are
  * literal \uXXXX text so they stay legible in the editor. */
@@ -212,10 +212,9 @@ const without = (rows: Rule[], gone: Rule) =>
   rows.filter((r) => r.pattern !== gone.pattern);
 
 const WARN_WITH_RISK =
-  "Some of beets’ own replace rules are missing, so an album with no artist or album tag can be filed outside your library. Add recommended rules puts them back.";
+  "Some of beets’ own replace rules are missing, so an album with no artist tag can be filed outside your library. Add recommended rules, then Save.";
 const WARN_NO_RISK =
-  "Some of beets’ own replace rules are missing. Add recommended rules puts them back.";
-const NOTHING_TO_ADD = "Recommended rules are already in place.";
+  "Some of beets’ own replace rules are missing. Add recommended rules, then Save.";
 
 /** Render the panel on a read whose rows are `replace` and whose beets rules
  * are `beetsReplace`; resolve once the editor is up. */
@@ -321,7 +320,6 @@ test("Add recommended rules on the old starter gives the new starter's block", a
   await addRecommended();
   expect(replaceRows()).toEqual(STARTER);
   expect(rulesWarning()).toBeNull();
-  expect(screen.queryByText(NOTHING_TO_ADD)).not.toBeInTheDocument();
 });
 
 test("Add recommended rules moves beets' rules after the typographic ones (the old button's order)", async () => {
@@ -389,25 +387,85 @@ test("with beets' rules unread, Add recommended rules still puts the typographic
   expect(replaceRows()).toEqual([...TYPOGRAPHIC, amp]);
 });
 
-test("a press that would change nothing says so, and the line goes with the next edit", async () => {
-  await renderRules(STARTER);
-  expect(screen.queryByText(NOTHING_TO_ADD)).not.toBeInTheDocument();
+// Save drops a draft with no pattern row, so config.yaml loses its replace:
+// block and beets uses its own rules again: nothing is missing.
+test("no warning once every row of the old starter is deleted", async () => {
+  await renderRules(TYPOGRAPHIC);
+  expect(rulesWarning()).toBe(WARN_WITH_RISK);
+  for (let i = TYPOGRAPHIC.length; i > 0; i--) {
+    await userEvent.click(
+      screen.getByRole("button", { name: `Remove replace rule ${i}` }),
+    );
+  }
+  expect(replaceRows()).toEqual([]);
+  expect(rulesWarning()).toBeNull();
+});
+
+test("no warning while every row left has a blank pattern", async () => {
+  await renderRules(TYPOGRAPHIC);
+  for (let i = TYPOGRAPHIC.length; i > 0; i--) {
+    await userEvent.click(
+      screen.getByRole("button", { name: `Remove replace rule ${i}` }),
+    );
+  }
+  await userEvent.click(
+    screen.getByRole("button", { name: /add replacement/i }),
+  );
+  await userEvent.type(screen.getByLabelText("Replace value 1"), "_");
+  expect(replaceRows()).toEqual([{ pattern: "", replacement: "_" }]);
+  expect(rulesWarning()).toBeNull();
+});
+
+// A read with no rows is an empty `replace: {}` on disk: beets then uses no
+// rules at all, and Save stays off, so the file stands.
+test("a read with no replace rows warns, naming the risk", async () => {
+  await renderRules([]);
+  expect(replaceRows()).toEqual([]);
+  expect(rulesWarning()).toBe(WARN_WITH_RISK);
+});
+
+test("Add recommended rules on a read with no replace rows gives the starter's block", async () => {
+  await renderRules([]);
   await addRecommended();
-  // Polite, not an alert: nothing is wrong.
-  expect(screen.getByText(NOTHING_TO_ADD).tagName).toBe("OUTPUT");
   expect(replaceRows()).toEqual(STARTER);
-  // Nothing changed, so there is still nothing to save.
-  expect(screen.getByRole("button", { name: /save naming/i })).toBeDisabled();
+  expect(rulesWarning()).toBeNull();
+});
 
-  // A second press says it again: new text nodes, so the same words are
-  // announced again rather than swallowed as an unchanged region.
-  const said = screen.getByText(NOTHING_TO_ADD).firstChild;
-  expect(said).not.toBeNull();
+test("an empty replace value reads as deleting, not as a blank to fill in", async () => {
+  await renderRules(BEETS);
+  expect(screen.getByLabelText("Replace value 8")).toHaveAttribute(
+    "placeholder",
+    "nothing",
+  );
+});
+
+test("the Add recommended rules help is said once, in the helper line", async () => {
+  await renderRules(STARTER);
+  expect(
+    screen.getByRole("button", { name: /add recommended rules/i }),
+  ).not.toHaveAttribute("title");
+  expect(
+    screen.getByText(/^Recommended rules turn look-alike/),
+  ).toHaveTextContent(
+    /^Recommended rules turn look-alike characters \(curly quotes, dashes, ellipsis\) into ASCII so tags can’t make twin folders, and include beets’ own rules\.$/,
+  );
+});
+
+test("Add recommended rules ends a shown Save failure, even when it adds nothing", async () => {
+  mockPanel({ applyPending: false, save: () => fail(500) });
+  wrap(<NamingPanel />);
+  const def = await screen.findByDisplayValue(/\$albumartist/);
   await addRecommended();
-  expect(screen.getByText(NOTHING_TO_ADD).firstChild).not.toBe(said);
+  expect(replaceRows()).toEqual(TYPOGRAPHIC);
+  await userEvent.type(def, "X");
+  await userEvent.click(screen.getByRole("button", { name: /save naming/i }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    SAVE_FALLBACK_ALERT,
+  );
 
-  await userEvent.type(screen.getByLabelText("Replace value 1"), "x");
-  expect(screen.queryByText(NOTHING_TO_ADD)).not.toBeInTheDocument();
+  await addRecommended();
+  expect(replaceRows()).toEqual(TYPOGRAPHIC);
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
 test("Save sends the restored rules", async () => {
