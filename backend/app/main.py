@@ -23,6 +23,7 @@ from app.api.config_ import router as config_router
 from app.api.disk_sync import router as disk_sync_router
 from app.api.duplicates import router as duplicates_router
 from app.api.events import router as events_router
+from app.api.folders import router as folders_router
 from app.api.health import router as health_router
 from app.api.import_ import router as import_router
 from app.api.lyrics import router as lyrics_router
@@ -682,6 +683,7 @@ app.include_router(artists_router, prefix="/api")
 app.include_router(browse_router, prefix="/api")
 app.include_router(search_router, prefix="/api")
 app.include_router(import_router, prefix="/api")
+app.include_router(folders_router, prefix="/api")
 app.include_router(config_router, prefix="/api")
 app.include_router(duplicates_router, prefix="/api")
 app.include_router(lyrics_router, prefix="/api")

@@ -19,7 +19,7 @@ from pydantic import AfterValidator, BaseModel, Field, StringConstraints
 from app.models.import_models import ImportOptions, ImportOrigin, Recommendation
 
 
-def _without_a_nul(path: str) -> str:
+def without_a_nul(path: str) -> str:
     """Refuse an embedded NUL: ``os.path.realpath`` 500'd the start and beets'
     ``lstat`` failed the job (``test_a_nul_in_the_posted_path_is_refused_before_any_job``)."""
     if "\x00" in path:
@@ -93,7 +93,7 @@ class StartImportRequest(BaseModel):
     path: Annotated[
         str,
         StringConstraints(strip_whitespace=True, min_length=1, max_length=4096),
-        AfterValidator(_without_a_nul),
+        AfterValidator(without_a_nul),
     ]
     options: ImportOptions | None = None
 

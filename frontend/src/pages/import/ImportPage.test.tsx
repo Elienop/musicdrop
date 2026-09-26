@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { delay, http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
@@ -471,6 +477,50 @@ describe("ImportPage — entry", () => {
     expect(
       screen.getByRole("button", { name: /start import/i }),
     ).not.toHaveAttribute("aria-describedby");
+  });
+
+  test("a browsed folder fills the path box, clears a stale refusal and takes focus", async () => {
+    // Use goes through the page's own setter, so it clears what typing clears.
+    server.use(
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json(
+          { detail: "That folder doesn’t exist." },
+          { status: 422 },
+        ),
+      ),
+      http.get(`${window.location.origin}/api/folders`, () =>
+        HttpResponse.json({
+          path: "/media/downloads",
+          parent: "/media",
+          folders: [],
+          total: 0,
+          refusal: null,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    const field = screen.getByLabelText("Folder path");
+    await user.type(field, "/media/downloads/gone");
+    await user.click(screen.getByRole("button", { name: /start import/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "That folder doesn’t exist.",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Browse folders" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Choose a folder",
+    });
+    await within(dialog).findByText("No subfolders.");
+    await user.click(
+      within(dialog).getByRole("button", { name: "Use this folder" }),
+    );
+
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(field).toHaveValue("/media/downloads");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(field).toHaveAttribute("aria-invalid", "false");
   });
 
   test("a 409 shows its sentence without reddening the path field", async () => {

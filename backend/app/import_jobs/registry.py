@@ -21,6 +21,7 @@ from pathlib import Path
 
 from app.beets.import_mapping import embedded_art
 from app.beets.import_session import ImportBridge, album_folder_under_source, source_as_walked
+from app.beets.store_layout import SourceRows, source_rows
 from app.config import Settings
 from app.events.broker import EventBroker
 from app.import_jobs.runner import BeetsImportRunner, ImportRunner
@@ -257,6 +258,30 @@ class ImportJobRegistry:
         self._settings = settings
         self._beets_dir = beets_dir
         self._refusal = refusal
+
+    def source_rows(self) -> SourceRows | None:
+        """What an import start refuses a folder from, built off the attached layout.
+
+        The folder browser's refusal line and badges read this, so they name the
+        same folders the start refuses, including after an Apply re-attaches.
+        ``None`` before ``attach_library``, or when a test attached no layout.
+        Blocking: it stats each row's chain.
+        """
+        if (
+            self._lib is None
+            or self._settings is None
+            or self._beets_dir is None
+            or self._trash_dir is None
+            or self._trash_origins_dir is None
+        ):
+            return None
+        return source_rows(
+            settings=self._settings,
+            lib=self._lib,
+            beets_dir=self._beets_dir,
+            trash_dir=self._trash_dir,
+            origins_dir=self._trash_origins_dir,
+        )
 
     @property
     def library(self) -> object | None:

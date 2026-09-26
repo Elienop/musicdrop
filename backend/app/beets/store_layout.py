@@ -59,15 +59,20 @@ __all__ = [
     "SOURCE_IS_THE_INBOX",
     "SOURCE_IS_THE_LIBRARY",
     "TRASH_SETTING",
+    "FolderBadge",
+    "SourceRows",
     "StoreLayoutError",
     "check_store_layout",
     "checked_protected_trees",
     "checked_reachable_store_dirs",
     "checked_store_dirs",
     "effective_config_paths",
+    "folder_badge",
     "import_source_refusal",
     "layout_check_for_config",
     "lib_music_and_library",
+    "source_refusal",
+    "source_rows",
     "yaml_error_at",
 ]
 
@@ -297,6 +302,8 @@ _SOURCE_ANSWERS: Final = (
 #: nothing. ``inbox`` is only ever "is or holds": albums inside it are what it
 #: is for.
 _SourceRow = tuple[Literal["library", "database", "inbox", "app"], tuple[_Rung, ...]]
+#: Every row, built once per question by :func:`source_rows`.
+SourceRows = tuple[_SourceRow, ...]
 
 
 def _source_kind(setting: str) -> Literal["library", "database", "inbox", "app"]:
@@ -367,7 +374,7 @@ def _distinct(
     return kept
 
 
-def _source_refusal(source: tuple[_Rung, ...], rows: list[_SourceRow]) -> str | None:
+def _source_refusal(source: tuple[_Rung, ...], rows: SourceRows) -> str | None:
     """Which sentence refuses ``source``, or ``None``.
 
     "Is" and "holds" first, for every row but the inbox's: a folder that is or
@@ -388,7 +395,7 @@ def _source_refusal(source: tuple[_Rung, ...], rows: list[_SourceRow]) -> str | 
     return _nearest_container_refusal(source, rows)
 
 
-def _nearest_container_refusal(source: tuple[_Rung, ...], rows: list[_SourceRow]) -> str | None:
+def _nearest_container_refusal(source: tuple[_Rung, ...], rows: SourceRows) -> str | None:
     """Refuse a source whose nearest container is one of ours.
 
     So ``<library>/.trash/x`` is refused while ``<library>/Artist/Album`` and
@@ -444,6 +451,32 @@ def import_source_refusal(
     a protected folder inside the source's tree, or a symlink inside the source
     pointing at one. Both are residuals in BACKLOG's import-start refusal entry.
     """
+    return source_refusal(
+        sources,
+        source_rows(
+            settings=settings,
+            lib=lib,
+            beets_dir=beets_dir,
+            trash_dir=trash_dir,
+            origins_dir=origins_dir,
+        ),
+    )
+
+
+def source_rows(
+    *,
+    settings: Settings,
+    lib: Any,
+    beets_dir: Path,
+    trash_dir: Path,
+    origins_dir: Path,
+) -> SourceRows:
+    """Every :func:`protected_entries` row as the import refusal compares it.
+
+    Built once per question: one ``stat`` per rung of each row's chains. The
+    folder browser builds it once per listing and asks it of the listed folder
+    (:func:`source_refusal`) and of every folder in the list (:func:`folder_badge`).
+    """
     music_dir, library_path = lib_music_and_library(lib)
     rows: list[_SourceRow] = []
     for path, _name, setting in protected_entries(
@@ -458,13 +491,52 @@ def import_source_refusal(
         rows.extend(
             (kind, chain) for chain in _distinct([_resolved_chain(path), _spelled_chain(path)])
         )
+    return tuple(rows)
+
+
+def source_refusal(sources: Sequence[str], rows: SourceRows) -> str | None:
+    """:func:`import_source_refusal`, over rows already built."""
     for source in sources:
         chains = _distinct([_resolved_chain(Path(source)), _walked_chain(source)])
-        found = {_source_refusal(chain, rows) for chain in chains}
-        refusal = next((answer for answer in _SOURCE_ANSWERS if answer in found), None)
+        refusal = _first_answer({_source_refusal(chain, rows) for chain in chains})
         if refusal is not None:
             return refusal
     return None
+
+
+def _first_answer(found: set[str | None]) -> str | None:
+    """The earliest of :data:`_SOURCE_ANSWERS` in ``found``."""
+    return next((answer for answer in _SOURCE_ANSWERS if answer in found), None)
+
+
+#: What the folder browser marks a folder with. slskd's folder gets none.
+FolderBadge = Literal["library", "musicdrop"]
+
+
+def folder_badge(spellings: Sequence[str], rows: SourceRows) -> FolderBadge | None:
+    """``library`` for the library, ``musicdrop`` for one of MusicDrop's folders.
+
+    The import refusal's own question, asked of each spelling by spelling ALONE:
+    no ``stat``, so a list of 500 folders costs no filesystem call here. So a
+    folder that reaches one of ours only through a link or a bind mount gets no
+    badge; the refusal line, which does stat, still speaks for it once opened.
+
+    ``musicdrop`` is every folder the start refuses with the app-data sentence:
+    one that is, holds or sits inside one of MusicDrop's folders. A folder that
+    holds the library gets NONE, on purpose: you go through it to reach your
+    downloads, and the refusal line explains it when you stand in it. slskd's
+    folder and what holds it get none either.
+    """
+    chains = [tuple((None, str(rung)) for rung in (p, *p.parents)) for p in map(Path, spellings)]
+    answer = _first_answer({_source_refusal(chain, rows) for chain in chains})
+    if answer == SOURCE_IS_THE_LIBRARY:
+        is_it = any(
+            kind == "library" and _relation_of(chain, row) == "is"
+            for chain in chains
+            for kind, row in rows
+        )
+        return "library" if is_it else None
+    return "musicdrop" if answer == SOURCE_HOLDS_APP_DATA else None
 
 
 def _refuse(

@@ -1880,6 +1880,24 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   - The slskd card's Change link, like its Review link, drops an unsaved auto-import flip.
     react-router's `useBlocker` is the engine answer (the app uses a data router). Not built.
 
+- **What the folder browser leaves open (2026-09-26, branch-2 S7 design residuals 3, 4, 26, 27).**
+  Search words: folder browser, Browse folders, `GET /api/folders`, badge, listing, hung mount.
+  - Badges compare by path only (`store_layout.folder_badge`, no `stat` per entry): an entry that
+    reaches the library or one of MusicDrop's folders only through a symlink or a bind mount shows
+    no badge. The refusal line, which does stat, still speaks once that folder is opened, and the
+    start still refuses it.
+  - A hung mount hangs the browser: a listing has no deadline, so the dialog shows `Loading…`
+    until the mount answers. The cap (2, `app/api/folders.py`) keeps it from taking more of
+    anyio's pool than that; listings behind it wait.
+  - Browsing into Trash gives no pointer to Restore; the refusal line says only that the folder
+    holds MusicDrop's own data.
+  - Up to 500 rows are tab stops before `Use this folder`; a one-stop list with arrow keys is a
+    new key handler.
+  - confuse's first read of a freshly reset `beets.config` is not thread-safe: in the suite,
+    three listings on a just-reset config saw `ignore not found` (a 500). The app reads the
+    config at boot, so only a listing inside an Apply's reload window could meet it; not measured
+    against a real Apply. Every other off-loop `beets.config` read shares the window.
+
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth
   slice 2's Sonar violations).**~~ — **FIXED in #202, 2026-08-30.** The owner's standing
@@ -3890,8 +3908,8 @@ the condition it names has changed.
     the browser is never shown which folders it handed over, and a count-dependent ternary would
     put two spellings of one refusal in the code to fix a sentence that is not wrong, only loose.
   * **It is a guard, not the cure.** The typo that prompted it came from a free-text path field.
-    The folder browser in *Next up* removes the typo at its source; this refusal is what stands in
-    until then.
+    The folder browser (branch 2, S7) removes the typo at its source; this refusal still stands
+    behind a typed path.
 
 - **"Stop this run" — what it deliberately does not do** (2026-09-19, `feat/import-keep-downloads`,
   replacing the run page's "Start over"). Stop is beets' own `ImportAbortError` raised at the next

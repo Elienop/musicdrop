@@ -51,6 +51,7 @@ export {
   CompassIcon as NotFound,
   ShieldCheckIcon as Resolved,
   MinusIcon as Missing,
+  FolderIcon as Folder,
   // Actions
   PlusIcon as Add,
   TrashIcon as Remove,
@@ -76,6 +77,8 @@ export {
   ArrowUpIcon as MoveUp,
   ArrowDownIcon as MoveDown,
   SignOutIcon as SignOut,
+  // Opens the folder browser. Not `Browse`, which is the Browse page.
+  FolderOpenIcon as BrowseFolders,
 } from "@phosphor-icons/react";
 
 // The provider half of the weight rule. Re-exported here so "everything

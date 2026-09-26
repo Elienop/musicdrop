@@ -4227,6 +4227,94 @@
         }
       }
     },
+    "/api/folders": {
+      "get": {
+        "tags": [
+          "folders"
+        ],
+        "summary": "List Folders",
+        "description": "The folders directly inside ``path``, for Add from folder's browser.\n\nNo ``path`` opens ``/media`` when it is a folder, else ``/``. A ``path`` that\nis not a folder lists its nearest existing parent. ``path`` is the display\nform a listing handed out, mapped back the way ``POST /api/import`` maps it.",
+        "operationId": "list_folders_api_folders_get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FolderListing"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Two folders display under the same name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The folder cannot be read, or the request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/config": {
       "get": {
         "tags": [
@@ -13089,6 +13177,92 @@
         ],
         "title": "FinishedSweep",
         "description": "The last finished sweep's recap \u2014 ``ActiveImportStatus.last_sweep``.\n\nPopulated only while the registry's single slot still holds a DONE\nsweep-origin job: a new import replaces the slot (and this recap with\nit), and failed sweeps surface nothing. ``job_id`` targets the run page\n(``/import?job=\u2026``), which lives exactly as long as this block does, so\nthe link can never dangle. ``stopped`` distinguishes a sweep the user\npaused (it ends ``phase=done`` with the flag set) from a completed one."
+      },
+      "FolderEntry": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "badge": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "library",
+                  "musicdrop"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Badge"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "path",
+          "badge"
+        ],
+        "title": "FolderEntry",
+        "description": "One folder directly inside the listed one.\n\n``badge`` is ``library`` for the music library and ``musicdrop`` for a\nfolder that is, holds or sits inside one of MusicDrop's own. It only informs:\nevery folder can still be opened."
+      },
+      "FolderListing": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          },
+          "folders": {
+            "items": {
+              "$ref": "#/components/schemas/FolderEntry"
+            },
+            "type": "array",
+            "title": "Folders"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "refusal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refusal"
+          }
+        },
+        "type": "object",
+        "required": [
+          "path",
+          "parent",
+          "folders",
+          "total",
+          "refusal"
+        ],
+        "title": "FolderListing",
+        "description": "The folders directly inside ``path``, sorted ignoring case.\n\nAt most 500 are listed; ``total`` counts them all. Folders an import skips\n(beets' ``ignore`` and ``ignore_hidden``) are left out. ``parent`` is null at\n``/``. ``refusal`` is the sentence an import of ``path`` would be refused\nwith, or null."
       },
       "GroupDecision": {
         "properties": {

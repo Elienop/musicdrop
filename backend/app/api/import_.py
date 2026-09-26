@@ -50,6 +50,12 @@ from app.models.import_models import (
 from app.wire import AmbiguousDisplayName, resolve_posted_path
 
 _IMPORT_ALBUM_NOT_FOUND = "Import album not found"
+#: The 409 when a posted path's placeholder matches two folders. Shared with the
+#: folder browser, which takes the same display-form path back.
+AMBIGUOUS_FOLDERS_DETAIL: Final = (
+    "Two folders display under the same name because their names are "
+    "not valid UTF-8. Rename one on disk to tell them apart."
+)
 #: The stop route's 409 body and the description its ``responses=`` block declares.
 _IMPORT_NOT_RUNNING = "That import is no longer running."
 
@@ -301,11 +307,7 @@ async def start_import(
             path = await run_in_threadpool(resolve_posted_path, body.path)
         except AmbiguousDisplayName:
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    "Two folders display under the same name because their names are "
-                    "not valid UTF-8. Rename one on disk to tell them apart."
-                ),
+                status_code=status.HTTP_409_CONFLICT, detail=AMBIGUOUS_FOLDERS_DETAIL
             ) from None
         try:
             # ``reg.start`` -> ``runner.validate`` stats the caller's path, and a stat on

@@ -896,6 +896,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Folders
+         * @description The folders directly inside ``path``, for Add from folder's browser.
+         *
+         *     No ``path`` opens ``/media`` when it is a folder, else ``/``. A ``path`` that
+         *     is not a folder lists its nearest existing parent. ``path`` is the display
+         *     form a listing handed out, mapped back the way ``POST /api/import`` maps it.
+         */
+        get: operations["list_folders_api_folders_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/config": {
         parameters: {
             query?: never;
@@ -3365,6 +3389,43 @@ export interface components {
             skipped_known: number;
             /** Stopped */
             stopped: boolean;
+        };
+        /**
+         * FolderEntry
+         * @description One folder directly inside the listed one.
+         *
+         *     ``badge`` is ``library`` for the music library and ``musicdrop`` for a
+         *     folder that is, holds or sits inside one of MusicDrop's own. It only informs:
+         *     every folder can still be opened.
+         */
+        FolderEntry: {
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+            /** Badge */
+            badge: ("library" | "musicdrop") | null;
+        };
+        /**
+         * FolderListing
+         * @description The folders directly inside ``path``, sorted ignoring case.
+         *
+         *     At most 500 are listed; ``total`` counts them all. Folders an import skips
+         *     (beets' ``ignore`` and ``ignore_hidden``) are left out. ``parent`` is null at
+         *     ``/``. ``refusal`` is the sentence an import of ``path`` would be refused
+         *     with, or null.
+         */
+        FolderListing: {
+            /** Path */
+            path: string;
+            /** Parent */
+            parent: string | null;
+            /** Folders */
+            folders: components["schemas"]["FolderEntry"][];
+            /** Total */
+            total: number;
+            /** Refusal */
+            refusal: string | null;
         };
         /**
          * GroupDecision
@@ -8579,6 +8640,64 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_folders_api_folders_get: {
+        parameters: {
+            query?: {
+                path?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FolderListing"];
+                };
+            };
+            /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Two folders display under the same name. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The folder cannot be read, or the request failed validation. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
                 };
             };
         };

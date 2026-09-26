@@ -27,6 +27,7 @@ import {
   useStopImport,
 } from "@/api/useImport";
 import type { AlbumOrigin } from "@/components/albums/album-grid";
+import { FolderBrowserDialog } from "@/components/folders/FolderBrowserDialog";
 import {
   AddFromFolder,
   Albums,
@@ -275,6 +276,8 @@ function resumeBannerText(origin: string | undefined): string {
 const START_ERROR_ID = "start-import-error";
 /** The line under the path box saying what happens to the files. */
 const FILES_LINE_ID = "import-files-help";
+/** The path box, named by its label. */
+const PATH_ID = "import-path";
 
 /** Entry: a server-path input + Start. Polls the active-import probe so a
  * running import the user navigated away from surfaces a Resume banner (and
@@ -284,6 +287,8 @@ const FILES_LINE_ID = "import-files-help";
 function ImportEntry() {
   const [, setSearchParams] = useSearchParams();
   const [path, setPath] = useState("");
+  // Where Use in the folder browser sends focus.
+  const pathRef = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<"review" | "sweep">("review");
   const start = useStartImport();
   const queryClient = useQueryClient();
@@ -428,15 +433,20 @@ function ImportEntry() {
         </div>
 
         <div className="flex flex-col gap-2">
-          <label className="flex flex-col gap-2">
-            <span className="text-sm font-medium">Folder path</span>
+          {/* htmlFor, not a wrapping label: the Browse button beside the box
+              cannot sit inside the box's label. */}
+          <label htmlFor={PATH_ID} className="text-sm font-medium">
+            Folder path
+          </label>
+          <div className="flex gap-2">
             <Input
+              id={PATH_ID}
+              ref={pathRef}
               type="text"
               value={path}
               onChange={(e) => onPathChange(e.target.value)}
               // Outside a default library (/media/music), which an import refuses.
               placeholder="/media/downloads/Artist - Album"
-              aria-label="Folder path"
               aria-describedby={filesLine === null ? undefined : FILES_LINE_ID}
               // The contract's own bound (`StartImportRequest.path`,
               // max_length=4096 — Linux PATH_MAX, so no real path reaches it).
@@ -451,7 +461,14 @@ function ImportEntry() {
               // the user off to edit the one thing that was fine.
               aria-invalid={start.error instanceof ImportStartRejectedError}
             />
-          </label>
+            {/* The page's own setter, so a browsed folder clears a stale
+                refusal exactly as typing does. */}
+            <FolderBrowserDialog
+              value={path}
+              onUse={onPathChange}
+              fieldRef={pathRef}
+            />
+          </div>
           {/* What the import will do with these files, from the operation beets
               loaded. Outside the <label>, so the link is not part of the field's
               click target. Nothing while it loads or if it can't be read: a
