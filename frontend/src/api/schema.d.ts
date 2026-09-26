@@ -1811,6 +1811,8 @@ export interface paths {
         /**
          * Remove Folder Source
          * @description Remove a Folder source. The folder on disk is not touched.
+         *
+         *     Under the same cap as list and add, since it reads the same file.
          */
         delete: operations["remove_folder_source_api_sources_folders__source_id__delete"];
         options?: never;
@@ -12384,6 +12386,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The store layout is refused, so no import could start. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
         };

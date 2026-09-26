@@ -6,8 +6,9 @@ shows on its own card through ``GET /api/slskd/settings``.
 
 The folder is stored as the client sent it, in display form, and resolved on
 use the way ``POST /api/import`` resolves its ``path``. Adding asks what a start
-would: the folder is there and is a folder, and the import refusal lets it
-through, with the same sentences. Removing touches no files.
+would: the store layout is not refused (else the start's 503), the folder is
+there and is a folder, and the import refusal lets it through, with the same
+sentences. Removing touches no files.
 """
 
 from __future__ import annotations
@@ -18,13 +19,12 @@ from pathlib import Path
 from typing import Annotated, Final
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from fastapi.concurrency import run_in_threadpool
 
 from app.api.folders import folder_read
 from app.api.import_ import AMBIGUOUS_FOLDERS_DETAIL
 from app.beets.store_layout import source_refusal
 from app.config import settings
-from app.import_jobs.registry import ImportJobRegistry, get_registry
+from app.import_jobs.registry import ImportJobRegistry, LibraryRefusedError, get_registry
 from app.import_jobs.runner import (
     SOURCE_MISSING,
     ImportSourceRefusedError,
@@ -69,7 +69,12 @@ def _read_sources(store: SourcesStore) -> SourceList:
 
 
 def _add(store: SourcesStore, reg: ImportJobRegistry, name: str, folder: str) -> SourceSummary:
-    """Check ``folder`` as a start would, then store it as sent. Every blocking step."""
+    """Check ``folder`` as a start would, then store it as sent. Every blocking step.
+
+    A refused layout answers first, as it does for a start: it leaves no rows, so
+    nothing else here could say the folder is slskd's or the beets dir.
+    """
+    reg.raise_if_refused()
     path = resolve_posted_path(folder)
     refusal = missing_source_error([path])
     if refusal is not None:
@@ -105,6 +110,10 @@ async def list_sources(
             " holds the library or MusicDrop's own data, or it is or holds slskd's whole"
             " folder, or the request failed validation."
         ),
+        503: {
+            "model": ErrorDetail,
+            "description": "The store layout is refused, so no import could start.",
+        },
     },
 )
 async def add_folder_source(
@@ -121,6 +130,9 @@ async def add_folder_source(
         ) from None
     except (SourcePathMissingError, ImportSourceRefusedError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
+    except LibraryRefusedError as exc:
+        # The start's answer and sentence (``app/api/import_.py``).
+        raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
 @router.delete(
@@ -132,7 +144,10 @@ async def remove_folder_source(
     source_id: str,
     store: Annotated[SourcesStore, Depends(get_sources_store)],
 ) -> Response:
-    """Remove a Folder source. The folder on disk is not touched."""
-    if not await run_in_threadpool(store.remove, source_id):
+    """Remove a Folder source. The folder on disk is not touched.
+
+    Under the same cap as list and add, since it reads the same file.
+    """
+    if not await folder_read(partial(store.remove, source_id)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=SOURCE_NOT_FOUND)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

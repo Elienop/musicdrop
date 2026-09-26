@@ -8613,6 +8613,16 @@
               }
             }
           },
+          "503": {
+            "description": "The store layout is refused, so no import could start.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
             "content": {
@@ -8662,7 +8672,7 @@
           "sources"
         ],
         "summary": "Remove Folder Source",
-        "description": "Remove a Folder source. The folder on disk is not touched.",
+        "description": "Remove a Folder source. The folder on disk is not touched.\n\nUnder the same cap as list and add, since it reads the same file.",
         "operationId": "remove_folder_source_api_sources_folders__source_id__delete",
         "parameters": [
           {

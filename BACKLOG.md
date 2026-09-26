@@ -128,7 +128,8 @@ entry carries a dated correction block where the pass changed it._
      with its sentences. Residuals: a non-UTF-8 folder that later gets a look-alike twin answers
      409 at start (and reads as there on the list); no cap on how many, names may repeat, and a
      folder may be added twice (cosmetic); a corrupt or unreadable file reads as empty and the
-     next add or remove replaces it (logged on every read).
+     next add replaces it (logged on every read), while a remove answers 404 and writes nothing.
+     More in "What Settings → Sources leaves open" below.
    - **Beyond beets.** beets resolves the flags TWICE and the orders differ: `set_config` keeps
      one of move > link > hardlink > reflink, each clearing `copy` (`importer/session.py:114-138`),
      and the files stage then takes `copy` if it survived, telling `reflink: auto` apart from
@@ -1911,13 +1912,38 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     `models/import_api.py` `strip_whitespace`, and as the page strips), so a folder named
     `Album ` (trailing space; slskd keeps those on Linux) opens its sibling `Album`, and with no
     such sibling it, or one ending in a no-break space, lists its parent. A wrong folder, never a
-    refused one. The fix changes how
+    refused one. Settings → Sources strips the same way (`models/sources.py` ~42,
+    `FolderSourcesPanel.tsx` ~166), so a folder `Album ` is saved as `Album`. The fix changes how
     the start and the page strip too. Not built.
   - After Apply loads a refused store layout, the registry has no Trash folders attached
     (`registry.source_rows()` is `None`), so the browser shows no badges and no refusal line; the
     start still fails closed with 503 and Apply's sentence.
   - Over the 500 cap, the dialog's narrowing searches only the first 500 (the dialog says so). A
     server-side filter would be the fix; beets has no listing API to lean on. Not built.
+
+- **What Settings → Sources leaves open (2026-09-26, branch-2 S8 review).**
+  Search words: Folder source, `sources.json`, `/api/sources`, saved folder, Sources page.
+  - A saved source can be, or later become, one the start refuses: an env or `directory:` change,
+    or a link retargeted after the add. The list never re-checks (it asks only whether the folder
+    is there), the start still refuses it, and S9's button would fill a path the start refuses.
+    beets has no source concept; the app's `folder_badge` (`store_layout.py` ~516) marks by
+    spelling only, with no `stat`. Not built.
+  - A non-regular file at `<beets_dir>/sources.json` (a FIFO) blocks every read of it until a
+    writer opens it or the app restarts; a directory there, or an unwritable beets dir, gives a
+    plain 500 on add. confuse skips a non-regular user config (`confuse/sources.py` ~94-95) and
+    the app checks `config.yaml` and `password-hash` the same way (`config_snapshot.py`
+    ~134-136, `auth/source.py` ~164-171); the slskd store (`app/slskd/config.py` ~75-83) has the
+    same unchecked read. Not built for either.
+  - The Sources list, add and remove share the folder browser's 2 slots (`folders.folder_read`),
+    and list and add `stat` SAVED folders: one hung saved folder can stall Browse, and after S9
+    Add from folder's list. The cap keeps the rest of anyio's threads for the app.
+  - A successful add is not announced to a screen reader; the app's pattern is an always-mounted
+    `role="status"` (`SlskdPanel.tsx` ~385-400). Not built.
+  - Removing a second row while the first is pending drops the first row's `aria-disabled`, and
+    the first one's failure is not told (one `useMutation`; TanStack's `useMutationState` would
+    see both). Not built.
+  - Rows with the same name get identical remove-button names (names may repeat, above). Not
+    built.
 
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth

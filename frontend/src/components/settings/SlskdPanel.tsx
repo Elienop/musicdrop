@@ -66,7 +66,7 @@ export function SlskdPanel() {
     return (
       <Panel>
         <p className="text-destructive text-sm" role="alert">
-          Could not load slskd settings.
+          Couldn’t load slskd settings.
         </p>
       </Panel>
     );

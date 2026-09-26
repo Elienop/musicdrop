@@ -30,6 +30,16 @@ function serve(rows: Row[]) {
   );
 }
 
+/** A response held until the test opens it, to act while a request is in
+ * flight. */
+function gate() {
+  let open!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { open, opened };
+}
+
 function removeButton(name: string) {
   return screen.getByRole("button", { name: `Remove ${name} from Sources` });
 }
@@ -49,7 +59,8 @@ describe("FolderSourcesPanel: the list", () => {
     expect(items).toHaveLength(2);
     expect(items[0]).toHaveTextContent("yubal/media/downloads/yubal");
     expect(within(items[0]!).queryByText("Missing")).toBeNull();
-    expect(items[1]).toHaveTextContent("lidarr/media/downloads/lidarr");
+    // Missing sits on the name line, before the path.
+    expect(items[1]).toHaveTextContent("lidarrMissing/media/downloads/lidarr");
     expect(within(items[1]!).getByText("Missing")).toBeInTheDocument();
     expect(removeButton("lidarr")).toBeInTheDocument();
   });
@@ -157,6 +168,108 @@ describe("FolderSourcesPanel: adding", () => {
     );
   });
 
+  test.each<[string, number, string, string, boolean]>([
+    [
+      "a 409 is about the folder: its words, field blamed",
+      409,
+      "Two folders display under the same name because their names are not valid UTF-8. Rename one on disk to tell them apart.",
+      "Two folders display under the same name because their names are not valid UTF-8. Rename one on disk to tell them apart.",
+      true,
+    ],
+    [
+      "a 503 is about the layout: its words, field not blamed",
+      503,
+      "the music folder is not mounted; imports are refused",
+      "the music folder is not mounted; imports are refused.",
+      false,
+    ],
+  ])("%s", async (_, status, detail, shown, blamed) => {
+    serve([]);
+    server.use(
+      http.post(ADD_URL, () => HttpResponse.json({ detail }, { status })),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<FolderSourcesPanel />);
+    await screen.findByText("No folders yet.");
+
+    const folder = screen.getByRole("textbox", { name: "Folder" });
+    await user.type(screen.getByLabelText("Name"), "x");
+    await user.type(folder, "/media/x");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    // Whole string: the generic sentence must not stand in for the server's.
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(shown);
+    expect(folder).toHaveAttribute("aria-invalid", String(blamed));
+    if (blamed) expect(folder).toHaveAccessibleDescription(shown);
+    else expect(folder).not.toHaveAttribute("aria-describedby");
+  });
+
+  test("typing while an add is in flight never detaches it: a 422 still shows", async () => {
+    const sentence = "That folder doesn’t exist.";
+    const held = gate();
+    serve([]);
+    server.use(
+      http.post(ADD_URL, async () => {
+        await held.opened;
+        return HttpResponse.json({ detail: sentence }, { status: 422 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<FolderSourcesPanel />);
+    await screen.findByText("No folders yet.");
+
+    const folder = screen.getByRole("textbox", { name: "Folder" });
+    await user.type(screen.getByLabelText("Name"), "x");
+    await user.type(folder, "/media/x");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await screen.findByRole("button", { name: "Adding…" });
+
+    await user.type(folder, "y");
+    expect(screen.getByRole("button", { name: "Adding…" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    held.open();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(sentence);
+    expect(folder).toHaveAttribute("aria-invalid", "true");
+  });
+
+  test("typing while an add is in flight never detaches it: a 201 still clears the row and focuses Name", async () => {
+    const held = gate();
+    let list: Row[] = [];
+    server.use(
+      http.get(SOURCES_URL, () => HttpResponse.json({ sources: list })),
+      http.post(ADD_URL, async () => {
+        await held.opened;
+        const added = row("n", "x");
+        list = [added];
+        return HttpResponse.json(added, { status: 201 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<FolderSourcesPanel />);
+    await screen.findByText("No folders yet.");
+
+    const name = screen.getByLabelText("Name");
+    const folder = screen.getByRole("textbox", { name: "Folder" });
+    await user.type(name, "x");
+    await user.type(folder, "/media/downloads/x");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await screen.findByRole("button", { name: "Adding…" });
+
+    // Name first, so each field's handler is exercised; focus ends on Folder.
+    await user.type(name, "y");
+    await user.type(folder, "y");
+    held.open();
+
+    await waitFor(() => expect(name).toHaveValue(""));
+    expect(folder).toHaveValue("");
+    expect(name).toHaveFocus();
+    expect(await screen.findByRole("listitem")).toHaveTextContent("x");
+  });
+
   test("Browse fills the Folder field", async () => {
     serve([]);
     server.use(
@@ -256,8 +369,49 @@ describe("FolderSourcesPanel: focus after a remove", () => {
     await user.click(removeButton("a"));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Couldn’t remove that folder. Try again.",
+      "Couldn’t remove that source. Try again.",
     );
     expect(removeButton("a")).toHaveFocus();
+  });
+
+  test("a dead network reads our sentence, not the browser's", async () => {
+    serve([row("a", "a")]);
+    server.use(http.delete(REMOVE_URL, () => HttpResponse.error()));
+    const user = userEvent.setup();
+    renderWithProviders(<FolderSourcesPanel />);
+    await screen.findByRole("listitem");
+
+    await user.click(removeButton("a"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Couldn’t remove that source. Try again.");
+  });
+
+  test("a user who moved on keeps their place", async () => {
+    const held = gate();
+    let list = [row("a", "a"), row("b", "b")];
+    server.use(
+      http.get(SOURCES_URL, () => HttpResponse.json({ sources: list })),
+      http.delete(REMOVE_URL, async ({ params }) => {
+        await held.opened;
+        list = list.filter((r) => r.id !== params.id);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<FolderSourcesPanel />);
+    await screen.findAllByRole("listitem");
+
+    await user.click(removeButton("a"));
+    const name = screen.getByLabelText("Name");
+    await user.click(name);
+    held.open();
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Remove a from Sources" }),
+      ).toBeNull(),
+    );
+    expect(name).toHaveFocus();
   });
 });

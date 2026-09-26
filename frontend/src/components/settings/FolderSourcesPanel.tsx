@@ -6,9 +6,14 @@ import {
   useState,
 } from "react";
 
-import { ImportStartRejectedError } from "@/api/useImport";
+import {
+  ImportConflictError,
+  ImportStartRejectedError,
+  startErrorSentence,
+} from "@/api/useImport";
 import {
   ADD_SOURCE_FAILED,
+  REMOVE_SOURCE_FAILED,
   type SourceSummary,
   useAddFolderSource,
   useRemoveFolderSource,
@@ -90,39 +95,49 @@ export function FolderSourcesPanel() {
       {rows !== undefined && rows.length > 0 && (
         <ul className="flex flex-col divide-y">
           {rows.map((row, index) => (
-            <li key={row.id} className="flex items-center gap-3 py-2">
-              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="text-sm font-medium break-words">
-                  {row.name}
-                </span>
-                <span className="text-muted-foreground min-w-0 font-mono text-xs break-all">
-                  {row.folder}
-                </span>
+            <li key={row.id} className="flex flex-col gap-0.5 py-2">
+              {/* The name line holds Missing and the remove button, so the
+                  path below takes the row's whole width. `items-start` keeps
+                  the button on the FIRST line of a wrapped name; `-my-1.5` is
+                  half the 12px by which the size-8 button exceeds the 20px
+                  line, so the two share a centre without the line growing
+                  (ReviewPage's Dismiss button, which uses `-mt-1.5`). */}
+              <div className="flex items-start gap-3">
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <span className="min-w-0 text-sm font-medium break-words">
+                    {row.name}
+                  </span>
+                  {!row.exists && <Badge variant="outline">Missing</Badge>}
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Remove ${row.name} from Sources`}
+                  // Not `disabled`: that would drop focus to the body mid-remove.
+                  aria-disabled={remove.isPending && remove.variables === row.id}
+                  className="-my-1.5 shrink-0 aria-disabled:opacity-50"
+                  ref={(el) => {
+                    if (el === null) removeButtons.current.delete(row.id);
+                    else removeButtons.current.set(row.id, el);
+                  }}
+                  onClick={() => onRemove(row, index)}
+                >
+                  <Close aria-hidden="true" />
+                </Button>
               </div>
-              {!row.exists && <Badge variant="outline">Missing</Badge>}
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`Remove ${row.name} from Sources`}
-                // Not `disabled`: that would drop focus to the body mid-remove.
-                aria-disabled={remove.isPending && remove.variables === row.id}
-                className="aria-disabled:opacity-50"
-                ref={(el) => {
-                  if (el === null) removeButtons.current.delete(row.id);
-                  else removeButtons.current.set(row.id, el);
-                }}
-                onClick={() => onRemove(row, index)}
-              >
-                <Close aria-hidden="true" />
-              </Button>
+              <span className="text-muted-foreground min-w-0 font-mono text-xs break-all">
+                {row.folder}
+              </span>
             </li>
           ))}
         </ul>
       )}
+      {/* Always ours: the thrown message can be the browser's own ("Failed
+          to fetch"). */}
       {remove.isError && (
         <p className="text-destructive text-sm" role="alert">
-          {remove.error.message}
+          {REMOVE_SOURCE_FAILED}
         </p>
       )}
       <AddFolderSource nameRef={nameRef} />
@@ -141,22 +156,27 @@ function AddFolderSource({
   const folderRef = useRef<HTMLInputElement>(null);
 
   const blank = name.trim() === "" || folder.trim() === "";
-  // Only the server's own sentence is about what is in the Folder field; a
-  // generic failure says nothing is wrong with it.
-  const refused = add.error instanceof ImportStartRejectedError;
-  let failure: string | null = null;
-  if (add.error !== null) failure = refused ? add.error.message : ADD_SOURCE_FAILED;
+  // Every refusal the server words (422, 409, 503) shows in its words; the
+  // rest take the generic sentence. Only a 422 or 409 is about what is in the
+  // Folder field: a 503 is about the library's layout, which no edit to the
+  // field can fix, and a generic failure says nothing is wrong with it.
+  const refused =
+    add.error instanceof ImportStartRejectedError ||
+    add.error instanceof ImportConflictError;
+  const failure = startErrorSentence(add.error, add.isError, ADD_SOURCE_FAILED);
 
+  // Clear only a SHOWN error: `reset()` also detaches an add in flight, whose
+  // answer would then never reach this row (ImportPage's `onPathChange`).
   function onNameChange(next: string) {
     setName(next);
-    add.reset();
+    if (add.isError) add.reset();
   }
 
   // Also the browser's setter, so a browsed folder clears a stale refusal
   // exactly as typing does.
   function onFolderChange(next: string) {
     setFolder(next);
-    add.reset();
+    if (add.isError) add.reset();
   }
 
   function onSubmit(e: SubmitEvent<HTMLFormElement>) {

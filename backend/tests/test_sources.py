@@ -58,10 +58,18 @@ class _Layout:
         return self.beets / "sources.json"
 
 
-def _layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, attach: bool = True) -> _Layout:
+def _layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    attach: bool = True,
+    refusal: str | None = None,
+) -> _Layout:
     """The image's folders; the registry attached as in production.
 
-    Every store is set explicitly, so no ``.env`` value can move one.
+    With ``refusal``, attached as Apply attaches a refused store layout: no
+    Trash folders and its sentence. Every store is set explicitly, so no
+    ``.env`` value can move one.
     """
     root = tmp_path / "root"
     music = root / "media" / "music"
@@ -86,10 +94,12 @@ def _layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, attach: bool = T
     monkeypatch.setattr("app.config.settings.beets_dir", str(beets_dir))
     if attach:
         lib: Library = build_library(str(beets_dir / "library.db"), str(music))
+        refused = refusal is not None
         get_registry().attach_library(
             lib,
-            beets_dir / "trash",
-            trash_origins_dir=beets_dir / "trash-origins",
+            None if refused else beets_dir / "trash",
+            trash_origins_dir=None if refused else beets_dir / "trash-origins",
+            refusal=refusal,
             settings=settings,
             beets_dir=beets_dir,
         )
@@ -209,6 +219,26 @@ def test_adding_refuses_what_a_start_refuses_with_its_sentences(
         assert (added.status_code, added.json()) == (422, {"detail": sentence}), folder
     assert _sources() == []
     assert not layout.file.exists()
+
+
+def test_with_the_layout_refused_adding_answers_the_starts_503(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After Apply loads a refused layout no rows are attached, so nothing could say a
+    folder is slskd's; the add answers what the start answers, and stores nothing.
+    A missing folder too: the start asks about the layout first."""
+    refusal = "Apply loaded config.yaml. The store layout is refused."
+    layout = _layout(tmp_path, monkeypatch, refusal=refusal)
+    kept = SourcesStore(layout.file).add("kept", str(_folder(layout.downloads, "kept")))
+    before = layout.file.read_bytes()
+    client = TestClient(app)
+    for folder in (layout.inbox, layout.downloads / "nowhere"):
+        started = client.post("/api/import", json={"path": str(folder)})
+        assert (started.status_code, started.json()) == (503, {"detail": refusal}), folder
+        added = _add("x", folder)
+        assert (added.status_code, added.json()) == (503, {"detail": refusal}), folder
+    assert [row["id"] for row in _sources()] == [kept.id]
+    assert layout.file.read_bytes() == before
 
 
 def test_a_file_is_not_a_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -527,3 +557,48 @@ async def test_a_hung_source_takes_no_more_than_the_browsers_two_threads(
 
     assert (stuck_now, borrowed) == (2, 2)
     assert answered == [200, 200, 200]
+
+
+@pytest.mark.anyio
+async def test_a_hung_remove_takes_no_more_than_the_browsers_two_threads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A remove reads the file too (a FIFO there never answers): three removes
+    park behind the same cap of 2 as the list and the add."""
+    monkeypatch.setattr("app.config.settings.beets_dir", str(tmp_path))
+    lock = threading.Lock()
+    release = threading.Event()
+    inside = 0
+
+    def stuck(self: SourcesStore, source_id: str) -> bool:
+        nonlocal inside
+        with lock:
+            inside += 1
+        release.wait(10)
+        return False
+
+    monkeypatch.setattr(SourcesStore, "remove", stuck)
+    transport = httpx.ASGITransport(app=app)
+    jar = {SESSION_COOKIE_NAME: session_cookie_value()}
+    answered: list[int] = []
+
+    async def remove_one() -> None:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver", cookies=jar
+        ) as client:
+            answered.append((await client.delete("/api/sources/folders/x")).status_code)
+
+    try:
+        async with anyio.create_task_group() as group:
+            for _ in range(3):
+                group.start_soon(remove_one)
+            await anyio.sleep(0.3)  # every caller has queued by now
+            with lock:
+                stuck_now = inside
+            borrowed = anyio.to_thread.current_default_thread_limiter().borrowed_tokens
+            release.set()
+    finally:
+        release.set()
+
+    assert (stuck_now, borrowed) == (2, 2)
+    assert answered == [404, 404, 404]

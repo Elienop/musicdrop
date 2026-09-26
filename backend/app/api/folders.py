@@ -63,8 +63,10 @@ MAX_FOLDERS: Final = 500
 #: so the cap really bounds threads. 2 because one person clicks through one
 #: dialog; a second is a double click or a second tab. No deadline: a hung mount
 #: hangs that request and parks the ones behind it, never the rest of the app.
-#: Settings → Sources shares it (:func:`folder_read`): the same person, reading
-#: the same kind of folder.
+#: Settings → Sources shares it (:func:`folder_read`), and its list and add
+#: ``stat`` SAVED folders, so one hung saved folder can stall Browse and every
+#: other reader of this cap. Taken so the cap keeps every other thread of
+#: anyio's pool for the rest of the app.
 _FOLDER_LIST_SLOTS: Final = anyio.CapacityLimiter(2)
 
 

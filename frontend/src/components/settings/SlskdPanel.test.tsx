@@ -67,6 +67,13 @@ describe("SlskdPanel", () => {
   // Review page). It reads GET /api/slskd/settings, which each test registers,
   // and the import operation, which the beforeEach above answers.
 
+  test("a settings read that fails says so", async () => {
+    server.use(http.get(SETTINGS, () => new HttpResponse(null, { status: 500 })));
+    renderWithProviders(<SlskdPanel />);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Couldn’t load slskd settings.");
+  });
+
   test("renders a real h2 heading (not a CardTitle div)", async () => {
     server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
     renderWithProviders(<SlskdPanel />);

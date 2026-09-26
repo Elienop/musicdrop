@@ -14,7 +14,9 @@ export type FolderSourceCreate = components["schemas"]["FolderSourceCreate"];
 /** The sentence for an add the server did not word itself (FastAPI's own
  * validation 422, a 5xx, a dead backend). */
 export const ADD_SOURCE_FAILED = "Couldn’t add that folder. Try again.";
-export const REMOVE_SOURCE_FAILED = "Couldn’t remove that folder. Try again.";
+/** A failed remove, whatever the cause. "Source", not "folder": removing
+ * touches no files, and "remove that folder" reads like deleting it on disk. */
+export const REMOVE_SOURCE_FAILED = "Couldn’t remove that source. Try again.";
 
 const SOURCES_KEY = ["sources"] as const;
 
@@ -33,7 +35,8 @@ export function useSources() {
  * A 422 carrying the server's own sentence (`That folder doesn’t exist.`, or
  * one of S1's refusals) throws that sentence, through the reader the import
  * start uses, so FastAPI's array-shaped 422 stays machine copy and takes
- * {@link ADD_SOURCE_FAILED} instead.
+ * {@link ADD_SOURCE_FAILED} instead. A worded 409 (two folders under one name)
+ * or 503 (a refused layout) throws the start's classes the same way.
  */
 export function useAddFolderSource() {
   const qc = useQueryClient();

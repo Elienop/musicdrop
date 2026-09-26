@@ -259,6 +259,16 @@ class ImportJobRegistry:
         self._beets_dir = beets_dir
         self._refusal = refusal
 
+    def raise_if_refused(self) -> None:
+        """Raise ``LibraryRefusedError`` with Apply's sentence while it stands.
+
+        The first thing ``start`` asks, and what adding a Folder source asks
+        first, so both answer alike: with the layout refused ``source_rows`` is
+        ``None`` and no other check can say where a folder sits.
+        """
+        if self._refusal is not None:
+            raise LibraryRefusedError(self._refusal)
+
     def source_rows(self) -> SourceRows | None:
         """What an import start refuses a folder from, built off the attached layout.
 
@@ -267,8 +277,8 @@ class ImportJobRegistry:
         ``None`` before ``attach_library``, when a test attached no layout, or
         after an Apply loaded a refused store layout (it attaches no Trash
         folders): the browser then shows no badges and no refusal line, while
-        ``POST /api/import`` still answers 503 with Apply's sentence
-        (``LibraryRefusedError``). Blocking: it stats each row's chain.
+        ``POST /api/import`` and adding a Folder source answer 503 with Apply's
+        sentence (``raise_if_refused``). Blocking: it stats each row's chain.
         """
         if (
             self._lib is None
@@ -350,8 +360,7 @@ class ImportJobRegistry:
         bank apply runner's translated decision, threaded to the session so
         the one-folder run answers every hook from it (None everywhere else).
         """
-        if self._refusal is not None:
-            raise LibraryRefusedError(self._refusal)
+        self.raise_if_refused()
         paths = [source] if isinstance(source, str) else list(source)
         runner = self._resolve_runner()
         forgiven = runner.validate(paths, options)

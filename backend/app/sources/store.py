@@ -58,7 +58,8 @@ class SourcesStore:
 
         A missing file is none yet. A file that cannot be read or parsed reads
         as empty too, so it never stops the app; it is logged, because the next
-        change replaces it.
+        add replaces it. A remove finds no source in it (``False``, so the route
+        answers 404) and writes nothing.
         """
         try:
             raw = self._path.read_bytes()
@@ -66,8 +67,7 @@ class SourcesStore:
             return []
         except OSError as exc:
             logger.warning(
-                "Sources: %r cannot be read (%s); it reads as empty and the next change"
-                " replaces it",
+                "Sources: %r cannot be read (%s); it reads as empty and the next add replaces it",
                 str(self._path),
                 exc.strerror,
             )
@@ -77,7 +77,7 @@ class SourcesStore:
         except ValueError:
             logger.warning(
                 "Sources: %r is not a valid sources file; it reads as empty and the next"
-                " change replaces it",
+                " add replaces it",
                 str(self._path),
             )
             return []
