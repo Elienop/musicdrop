@@ -351,7 +351,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
         names apply to imported files; use{" "}
         <span className="font-medium">Reorganize library</span> (Settings →
         Beets) to rename existing files. Saving writes to the same config;{" "}
-        <span className="font-medium">Apply</span> to load it. Leave a field
+        <span className="font-medium">Apply</span> to load it. Leave a template
         blank to use beets&rsquo; built-in default.
       </p>
 
@@ -758,7 +758,7 @@ function ReplaceEditor({
       </div>
       <p className="text-muted-foreground text-xs">
         Recommended rules turn look-alike characters (curly quotes, dashes,
-        ellipsis) into ASCII so tags can&rsquo;t make twin folders, and include
+        ellipsis) into ASCII so these can&rsquo;t make twin folders, and include
         beets&rsquo; own rules.
       </p>
     </div>

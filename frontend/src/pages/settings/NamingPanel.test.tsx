@@ -436,7 +436,7 @@ test("the Add recommended rules help is said once, in the helper line", async ()
   expect(
     screen.getByText(/^Recommended rules turn look-alike/),
   ).toHaveTextContent(
-    /^Recommended rules turn look-alike characters \(curly quotes, dashes, ellipsis\) into ASCII so tags can’t make twin folders, and include beets’ own rules\.$/,
+    /^Recommended rules turn look-alike characters \(curly quotes, dashes, ellipsis\) into ASCII so these can’t make twin folders, and include beets’ own rules\.$/,
   );
 });
 
