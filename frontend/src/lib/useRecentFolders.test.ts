@@ -1,5 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
   RECENT_FOLDERS_KEY,
@@ -53,6 +53,47 @@ describe("useRecentFolders", () => {
       { path: "/a", at: 1 },
       { path: "/d", at: 5 },
     ]);
+  });
+
+  test("a stored list longer than ten reads as its first ten", () => {
+    const eleven = Array.from({ length: 11 }, (_, i) => ({
+      path: `/p${i}`,
+      at: i,
+    }));
+    localStorage.setItem(RECENT_FOLDERS_KEY, JSON.stringify(eleven));
+    const { result } = renderHook(() => useRecentFolders());
+    expect(result.current.recent).toEqual(eleven.slice(0, 10));
+  });
+
+  test("a read stops at ten rows, however long the stored list", () => {
+    // A row past the tenth that counts its reads: a scan that walks the whole
+    // list (10k planted rows took 71 ms a mount) touches it.
+    let reads = 0;
+    const planted: unknown[] = Array.from({ length: 10 }, (_, i) => ({
+      path: `/p${i}`,
+      at: i,
+    }));
+    planted.push({
+      get path() {
+        reads += 1;
+        return "/eleventh";
+      },
+      at: 10,
+    });
+    const parse = JSON.parse.bind(JSON);
+    const spy = vi
+      .spyOn(JSON, "parse")
+      .mockImplementation((text: string) =>
+        text === "planted" ? planted : parse(text),
+      );
+    localStorage.setItem(RECENT_FOLDERS_KEY, "planted");
+    try {
+      const { result } = renderHook(() => useRecentFolders());
+      expect(result.current.recent).toHaveLength(10);
+      expect(reads).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test("text that is not a list reads as none", () => {

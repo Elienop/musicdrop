@@ -142,8 +142,8 @@ function elapsedSentence(seconds: number): React.ReactNode | undefined {
  * caller. Measured, it differs in six properties rather than one: gap 12px vs
  * 8px, icon 20px vs 16px, top correction 0 vs 2px (its icon matches the line
  * box exactly), `font-medium` vs inherited, the muted colour on the icon
- * rather than on the line, and no `min-h-5`. It also owns the `id` that the
- * Start button's `aria-describedby` points at. Both shapes satisfy the same
+ * rather than on the line, and no `min-h-5`. It also owns the `id` that both
+ * start buttons' `aria-describedby` point at. Both shapes satisfy the same
  * invariant today — offset 0 from the first line box, measured at 1280 and
  * 360 — and the banner's own comment carries its numbers. */
 function StatusLine({
@@ -255,7 +255,7 @@ export function ImportPage() {
   const jobId = searchParams.get("job") ?? undefined;
   useJobChangeH1Focus(jobId);
 
-  // No active job in the URL -> the entry screen (path + Start).
+  // No active job in the URL -> the entry screen (path + the two starts).
   if (!jobId) {
     return <ImportEntry />;
   }
@@ -275,9 +275,9 @@ function resumeBannerText(origin: string | undefined): string {
   return "An import is already running.";
 }
 
-/** The id linking the entry screen's failure sentence to Start. One screen, one
- * alert (the branches below are exclusive), so a constant is enough — the same
- * shape as {@link IMPORT_AGAIN_ERROR_ID} and the `resume-import-hint` above. */
+/** The id linking the entry screen's failure sentence to both start buttons.
+ * One screen, one alert (the branches below are exclusive), so a constant is
+ * enough — the same shape as {@link IMPORT_AGAIN_ERROR_ID} and the `resume-import-hint` above. */
 const START_ERROR_ID = "start-import-error";
 /** The line under the path box saying what happens to the files. */
 const FILES_LINE_ID = "import-files-help";
@@ -353,8 +353,9 @@ function ImportEntry() {
   // A refusal must not outlive the input it was about. `start.error` survives
   // until the next `mutate`, so after "That folder doesn’t exist." the user
   // fixed the typo and the field stayed red with the stale sentence still wired
-  // into Start's aria-describedby. Same shape as RenameArtistAction's
-  // `onNameChange`, which drops a preview the moment its target changes.
+  // into the start buttons' aria-describedby. Same shape as
+  // RenameArtistAction's `onNameChange`, which drops a preview the moment its
+  // target changes.
   function onPathChange(value: string) {
     setPath(value);
     if (start.isError) start.reset();
@@ -449,7 +450,7 @@ function ImportEntry() {
         // A running import the user navigated away from — one click back in.
         // Resuming just navigates to `?job=<id>`; the run page routes to the
         // right phase view and pins any album awaiting a decision. The text's
-        // id describes the disabled Start below (aria-describedby) so a
+        // id describes the disabled start buttons below (aria-describedby) so a
         // keyboard/SR user gets the "why" + the recovery action without
         // duplicate copy — and without a disabled-button title (spec §4 rule).
         <StatusBanner
@@ -553,27 +554,28 @@ function ImportEntry() {
           fieldRef={pathRef}
         />
 
-        {/* The refusal sits right above the buttons that caused it, so on a
-            phone it lands in view and does not push the pins under a finger. */}
-        {failure !== null && (
-          // `break-words`: these sentences carry repr'd filesystem paths, and
-          // Chromium gives no wrap opportunity at `/` or `_`. Measured for the
-          // same family on the Trash page (SettingsTrashPage.tsx), which also
-          // caps the measure — this form is a stretched child of a full-shell
-          // PageBody, so without `max-w-prose` a carried path runs the whole
-          // pane. No `w-full` beside it: the Trash sibling needs one because
-          // its parent is `items-start`, and a stretched flex item is already
-          // full width.
-          <p
-            id={START_ERROR_ID}
-            className="text-destructive max-w-prose text-sm break-words"
-            role="alert"
-          >
-            {failure}
-          </p>
-        )}
-
-        <div className="flex flex-col gap-2">
+        {/* `mt-3` (24px from the section above, 8px inside): the refusal
+            reads as the buttons', not as about the last Recent row. */}
+        <div className="mt-3 flex flex-col gap-2">
+          {/* The refusal sits right above the buttons that caused it, so on a
+              phone it lands in view and does not push the pins under a finger. */}
+          {failure !== null && (
+            // `break-words`: these sentences carry repr'd filesystem paths, and
+            // Chromium gives no wrap opportunity at `/` or `_`. Measured for the
+            // same family on the Trash page (SettingsTrashPage.tsx), which also
+            // caps the measure — this form is a stretched child of a full-shell
+            // PageBody, so without `max-w-prose` a carried path runs the whole
+            // pane. No `w-full` beside it: the Trash sibling needs one because
+            // its parent is `items-start`, and a stretched flex item is already
+            // full width.
+            <p
+              id={START_ERROR_ID}
+              className="text-destructive max-w-prose text-sm break-words"
+              role="alert"
+            >
+              {failure}
+            </p>
+          )}
           <div className="flex flex-wrap gap-2">
             <Button
               type="submit"

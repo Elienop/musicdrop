@@ -183,7 +183,7 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
         <dl className="flex flex-col gap-1">
           <dt className="text-sm font-medium">Folder</dt>
           <dd className="flex flex-wrap items-center gap-2">
-            <span className="min-w-0 font-mono text-sm break-all">
+            <span className="min-w-0 font-mono text-sm wrap-anywhere">
               {initial.folder}
             </span>
             {!initial.folder_exists && autoImport && (

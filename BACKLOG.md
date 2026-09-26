@@ -1945,6 +1945,23 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   - Rows with the same name get identical remove-button names (names may repeat, above). Not
     built.
 
+- **What Add from folder leaves open (2026-09-26, branch-2 S9 review).**
+  Search words: Add from folder, Recent folders, `useRecentFolders`, Review now, refusal, scroll.
+  - With 10 Recent rows, a refusal after Enter in the path box lands below the fold (y≈1486 on a
+    360×800 phone, y≈918 at 1280×800), and a 409/503 does not redden the box. Browsers scroll
+    only to focus; the app has no scroll helper (its one `scrollIntoView` is CodeMirror's,
+    `SettingsBeetsPage.tsx` ~141). Owner's call. Not built.
+  - A path whose 202 arrives after the page is left never joins Recent: `mutate()`'s own
+    `onSuccess` needs a mounted observer (`@tanstack/query-core` `mutationObserver.js` ~76); the
+    `useMutation`-level one always runs (`mutation.js` ~107), but `useStartImport` is shared. Not
+    built.
+  - A planted Recent row can show `Invalid Date`, or fill the box past 4096 characters (a value
+    set by code bypasses `maxLength`). Only a foreign writer (devtools, another script) can plant
+    one. Not built.
+  - `break-all` on older path sites (`PlexSettingsPanel.tsx` ~348, `SettingsTrashPage.tsx` ~83,
+    `SettingsBeetsPage.tsx` ~599/~876, `RouteErrorBoundary.tsx` ~71) splits words mid-name:
+    switch them as one sweep to `wrap-anywhere`, as S9's three sites now are. Not built.
+
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth
   slice 2's Sonar violations).**~~ — **FIXED in #202, 2026-08-30.** The owner's standing

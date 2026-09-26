@@ -201,8 +201,8 @@ function renderFeedWithProbes(route: string) {
 describe("ImportPage — entry", () => {
   beforeEach(() => {
     // ImportEntry polls the active-import probe (for the Resume banner).
-    // Default to "idle" so the pre-existing entry tests see no banner and an
-    // enabled Start; banner tests override with their own server.use(...).
+    // Default to "idle" so the pre-existing entry tests see no banner and
+    // enabled starts; banner tests override with their own server.use(...).
     server.use(
       http.get(ACTIVE_URL, () =>
         HttpResponse.json({ active: false, job_id: null }),
@@ -210,7 +210,7 @@ describe("ImportPage — entry", () => {
     );
   });
 
-  test("shows the path input + Start when there is no active job", () => {
+  test("shows the path input + Review now when there is no active job", () => {
     renderAt("/import");
     expect(
       screen.getByRole("heading", { level: 1, name: "Add from folder" }),
@@ -233,7 +233,7 @@ describe("ImportPage — entry", () => {
     );
   });
 
-  test("Start is disabled until a path is typed (blank-path guard)", async () => {
+  test("Review now is disabled until a path is typed (blank-path guard)", async () => {
     const user = userEvent.setup();
     renderAt("/import");
 
@@ -268,7 +268,7 @@ describe("ImportPage — entry", () => {
     expect(seenBody).toEqual({ path: "/music/incoming" });
   });
 
-  test("while a start is in flight Start is aria-disabled, not disabled, and a re-submit posts nothing", async () => {
+  test("while Review now's start is in flight it says Starting…, is aria-disabled, not disabled, and a re-submit posts nothing", async () => {
     // Same rule as the Pause button: the submit button holds focus when it is
     // pressed, so disabling it on that commit strands keyboard focus on <body>.
     // The blank-path and running-import gates stay real `disabled` — those are
@@ -285,9 +285,17 @@ describe("ImportPage — entry", () => {
     renderAt("/import");
 
     await user.type(screen.getByLabelText("Folder path"), "/music/incoming");
-    await user.click(screen.getByRole("button", { name: "Review now" }));
+    // Held by element, not name: the name changes to Starting… mid-test.
+    const review = screen.getByRole("button", { name: "Review now" });
+    await user.click(review);
 
     const button = await screen.findByRole("button", { name: /starting/i });
+    // The pressed one spins; Sweep & bank keeps its own label.
+    expect(button).toBe(review);
+    expect(button).toHaveTextContent("Starting…");
+    expect(
+      screen.getByRole("button", { name: "Sweep & bank" }),
+    ).toHaveAttribute("aria-disabled", "true");
     expect(button).toHaveAttribute("aria-disabled", "true");
     expect(button).not.toBeDisabled();
 
@@ -297,7 +305,7 @@ describe("ImportPage — entry", () => {
   });
 
   test("a 409 with no resumable import carries the server's own reason", async () => {
-    // The swap-lock case: no import owns the slot (probe idle -> Start enabled),
+    // The swap-lock case: no import owns the slot (probe idle -> starts enabled),
     // but a config Apply / duplicate resolve / backfill holds it, so POST
     // /api/import 409s. Three causes share the status, so the screen's own
     // "a library operation is in progress. Try again in a moment." was vague
@@ -325,7 +333,7 @@ describe("ImportPage — entry", () => {
     expect(alert).toHaveClass("break-words");
     expect(screen.queryByText(/try again in a moment/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/use resume above/i)).not.toBeInTheDocument();
-    // Start keeps focus through a failure (only `aria-disabled` while pending),
+    // Review now keeps focus through a failure (only `aria-disabled` while pending),
     // so the sentence is its description on the way back to it.
     expect(
       screen.getByRole("button", { name: "Review now" }),
@@ -376,7 +384,7 @@ describe("ImportPage — entry", () => {
     );
   });
 
-  test("shows a Resume banner to the running job and disables Start while active", async () => {
+  test("shows a Resume banner to the running job and disables Review now while active", async () => {
     server.use(
       http.get(ACTIVE_URL, () =>
         HttpResponse.json({ active: true, job_id: "job-9" }),
@@ -386,7 +394,7 @@ describe("ImportPage — entry", () => {
 
     const resume = await screen.findByRole("link", { name: /resume/i });
     expect(resume).toHaveAttribute("href", "/import?job=job-9");
-    // Start is gated while an import is already running.
+    // Review now is gated while an import is already running.
     expect(
       screen.getByRole("button", { name: "Review now" }),
     ).toBeDisabled();
@@ -414,8 +422,8 @@ describe("ImportPage — entry", () => {
   });
 
   test("a 409 refreshes the probe so the Resume banner appears (race recovery)", async () => {
-    // The race: the user lands while the probe still reads idle (Start enabled),
-    // types a path and clicks Start, but an import started elsewhere between
+    // The race: the user lands while the probe still reads idle (starts enabled),
+    // types a path and clicks Review now, but an import started elsewhere between
     // probes -> POST 409. onError invalidates ["active-import"]; the refetch now
     // reports the running job, so the Resume banner materializes instead of a
     // dead-end. The probe returns "active" only AFTER the POST has fired.
@@ -452,7 +460,7 @@ describe("ImportPage — entry", () => {
 
   test("editing the path clears the refusal it was about", async () => {
     // `start.error` survives until the next mutate, so the field stayed red and
-    // the stale sentence stayed wired into Start's aria-describedby while the
+    // the stale sentence stayed wired into Review now's aria-describedby while the
     // user typed the correction.
     server.use(
       http.post(IMPORT_URL, () =>
@@ -4326,12 +4334,15 @@ describe("ImportPage — Sonarr's order: Sources, Recent, two starts", () => {
     for (let i = 1; i < sequence.length; i += 1) {
       expectBefore(sequence[i - 1], sequence[i]);
     }
-    // Right above: nothing sits between the sentence and the buttons.
+    // Right above: nothing sits between the sentence and the buttons, and it
+    // is part of their group, not a section of its own under Recent.
     expect(alert.nextElementSibling).toContainElement(review());
-    // Sources' own Change goes to Settings → Sources.
+    expect(alert.parentElement).toBe(review().parentElement?.parentElement);
+    // Sources' own Change goes to Settings → Sources, and is named apart from
+    // the operation line's Change.
     expect(
       within(screen.getByRole("group", { name: "Sources" })).getByRole("link", {
-        name: "Change",
+        name: "Change sources",
       }),
     ).toHaveAttribute("href", "/settings/sources");
   });
@@ -4461,6 +4472,13 @@ describe("ImportPage — Sonarr's order: Sources, Recent, two starts", () => {
 
     const pin = await screen.findByRole("button", { name: "gone Missing" });
     expect(pin).toHaveAttribute("aria-disabled", "true");
+    // Missing is the app's Badge, as Settings → Sources shows it, and the pin
+    // takes no pointer (no hover fill) while focus still reaches it.
+    expect(within(pin).getByText("Missing")).toHaveAttribute(
+      "data-slot",
+      "badge",
+    );
+    expect(pin).toHaveClass("aria-disabled:pointer-events-none");
     await user.click(pin);
     expect(field()).toHaveValue("");
     expect(field()).not.toHaveFocus();
@@ -4497,9 +4515,10 @@ describe("ImportPage — Sonarr's order: Sources, Recent, two starts", () => {
     const user = userEvent.setup();
     renderAt("/import");
 
-    await user.click(
-      screen.getByRole("button", { name: "/media/downloads/Older" }),
-    );
+    const row = screen.getByRole("button", { name: "/media/downloads/Older" });
+    // The row's whole width picks it, and a path wraps at a space first.
+    expect(row).toHaveClass("w-full", "wrap-anywhere");
+    await user.click(row);
 
     expect(field()).toHaveValue("/media/downloads/Older");
     expect(field()).toHaveFocus();
@@ -4583,6 +4602,22 @@ describe("ImportPage — Sonarr's order: Sources, Recent, two starts", () => {
     expect(storedPaths()).toEqual([]);
     expect(screen.queryByRole("group", { name: "Recent" })).toBeNull();
     expect(field()).toHaveFocus();
+  });
+
+  test("after a remove, focus finds the next row by path, though another tab added one", async () => {
+    seedRecent("/r/a", "/r/b", "/r/c");
+    const user = userEvent.setup();
+    renderAt("/import");
+    const remove = (path: string) =>
+      screen.getByRole("button", { name: `Remove ${path} from Recent` });
+
+    // Another tab's add lands on top before this remove re-reads storage, so
+    // the removed row's index now holds /r/a.
+    seedRecent("/r/new", "/r/a", "/r/b", "/r/c");
+    await user.click(remove("/r/b"));
+
+    expect(storedPaths()).toEqual(["/r/new", "/r/a", "/r/c"]);
+    expect(remove("/r/c")).toHaveFocus();
   });
 
   test("storage that throws: no Recent section, and a start still goes through", async () => {

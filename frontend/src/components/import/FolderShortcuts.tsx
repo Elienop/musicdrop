@@ -3,6 +3,7 @@ import { Link } from "react-router";
 
 import { useSources } from "@/api/useSources";
 import { Close, Folder } from "@/components/icons";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { type RecentFolder, recentDayLabel } from "@/lib/useRecentFolders";
 
@@ -35,7 +36,9 @@ export function SourcePins({
             size="sm"
             // The primitive is `whitespace-nowrap` and `shrink-0`: `max-w-full`
             // caps a 40-character name at the column, and the label truncates.
-            className="max-w-full aria-disabled:opacity-50"
+            // A missing pin takes no hover fill, as the primitive's own
+            // `disabled:pointer-events-none` does; keyboard focus still reaches it.
+            className="max-w-full aria-disabled:pointer-events-none aria-disabled:opacity-50"
             aria-disabled={source.exists ? undefined : true}
             onClick={() => {
               if (source.exists) onPick(source.folder);
@@ -46,7 +49,7 @@ export function SourcePins({
             {!source.exists && (
               <>
                 {" "}
-                <span className="text-muted-foreground">Missing</span>
+                <Badge variant="outline">Missing</Badge>
               </>
             )}
           </Button>
@@ -55,7 +58,10 @@ export function SourcePins({
           to="/settings/sources"
           className="text-foreground focus-ring rounded-sm text-sm underline"
         >
-          Change
+          {/* "Change sources" to a screen reader: the operation line above
+              has a Change of its own. The space sits outside the span, where
+              every name computation keeps it. */}
+          Change <span className="sr-only">sources</span>
         </Link>
       </div>
     </fieldset>
@@ -81,16 +87,19 @@ export function RecentFolderList({
   fieldRef: RefObject<HTMLInputElement | null>;
 }>) {
   const removeButtons = useRef(new Map<string, HTMLButtonElement>());
-  // Where the removed row stood, so the row that slides into its place is next.
-  const pendingFocus = useRef<number | null>(null);
+  // The removed row's neighbours by path, next first: a remove re-reads
+  // storage, so another tab's add can shift every index in between.
+  const pendingFocus = useRef<(string | undefined)[] | null>(null);
 
   useEffect(() => {
-    const index = pendingFocus.current;
-    if (index === null) return;
+    const neighbours = pendingFocus.current;
+    if (neighbours === null) return;
     pendingFocus.current = null;
-    const target = recent[index] ?? recent[index - 1];
-    const button =
-      target === undefined ? undefined : removeButtons.current.get(target.path);
+    const button = neighbours
+      .map((path) =>
+        path === undefined ? undefined : removeButtons.current.get(path),
+      )
+      .find((el) => el !== undefined);
     (button ?? fieldRef.current)?.focus();
   }, [recent, fieldRef]);
 
@@ -104,10 +113,11 @@ export function RecentFolderList({
           <li key={row.path} className="flex items-start gap-3 py-2">
             <div className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
               {/* A plain button, not the primitive: that one is
-                  `whitespace-nowrap` and a path must wrap. */}
+                  `whitespace-nowrap` and a path must wrap. `w-full`: the row's
+                  whole width picks the path, not only its text. */}
               <button
                 type="button"
-                className="focus-ring min-w-0 rounded-sm text-left font-mono text-sm break-all hover:underline"
+                className="focus-ring w-full min-w-0 rounded-sm text-left font-mono text-sm wrap-anywhere hover:underline"
                 onClick={() => onPick(row.path)}
               >
                 {row.path}
@@ -130,7 +140,10 @@ export function RecentFolderList({
                 else removeButtons.current.set(row.path, el);
               }}
               onClick={() => {
-                pendingFocus.current = index;
+                pendingFocus.current = [
+                  recent[index + 1]?.path,
+                  recent[index - 1]?.path,
+                ];
                 onRemove(row.path);
               }}
             >

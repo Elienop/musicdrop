@@ -23,7 +23,8 @@ function isRecentFolder(value: unknown): value is RecentFolder {
 }
 
 /** The stored list, newest first, or `null` when storage can't be read at
- * all (blocked). Foreign entries are dropped, never rewritten. */
+ * all (blocked). Foreign and repeated entries are skipped, and the next save
+ * writes the list without them. */
 function readStored(): RecentFolder[] | null {
   let raw: string | null;
   try {
@@ -41,12 +42,14 @@ function readStored(): RecentFolder[] | null {
   if (!Array.isArray(parsed)) return [];
   const list: RecentFolder[] = [];
   for (const row of parsed) {
+    // Full: stop, however long a foreign writer made the stored list.
+    if (list.length === RECENT_FOLDERS_MAX) break;
     if (!isRecentFolder(row) || list.some((kept) => kept.path === row.path)) {
       continue;
     }
     list.push({ path: row.path, at: row.at });
   }
-  return list.slice(0, RECENT_FOLDERS_MAX);
+  return list;
 }
 
 /** Save `list`; false when storage refuses (blocked, or full). */

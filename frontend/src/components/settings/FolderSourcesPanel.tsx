@@ -126,7 +126,7 @@ export function FolderSourcesPanel() {
                   <Close aria-hidden="true" />
                 </Button>
               </div>
-              <span className="text-muted-foreground min-w-0 font-mono text-xs break-all">
+              <span className="text-muted-foreground min-w-0 font-mono text-xs wrap-anywhere">
                 {row.folder}
               </span>
             </li>
