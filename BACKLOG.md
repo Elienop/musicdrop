@@ -284,14 +284,15 @@ entry carries a dated correction block where the pass changed it._
      not land" with no link, because the session reported no album id before it died); the
      notice has no "add this folder" control (`ImportAgainButton` already starts an import
      from a known path, and `/import` takes no `?path=`); the list pages carry no marker;
-     `StatusBanner` forces `role="status"` and `items-center` (27 usages in 11 files; two
+     `StatusBanner` forces a live role by tone (neutral `status`, warning/destructive `alert`,
+     `StatusBanner.tsx` ~52, no opt-out) and `items-center` (27 usages in 11 files; two
      static banners carry the live role today, three call sites work around the alignment) —
      a role opt-out plus top alignment is its own change.
      Added 2026-09-26 (UI seat, `fix/naming-beets-path-rules`): the Naming page's missing-rules
      warning is a `tone="warning"` banner, so its `role="alert"` fires on every visit for an
      old-starter install and on the keystroke that crosses one of beets' patterns (typing `x`
      after `\.$` mounts it, Backspace unmounts it; MutationObserver-measured); the page's own
-     state lines are `<output>`. The invalid-regex line (`NamingPanel.tsx` ~729) also alerts on
+     state lines are `<output>`. The invalid-regex line (`NamingPanel.tsx` ~714) also alerts on
      load for a file that already holds a bad pattern. Alignment, measured: at 360 px the
      icon sits 50 px below the first line of a 6-line banner (Beets page: 20 px and 52 px).
      A live-DOM mock answered the design call below ("an `align` prop, or change the base"):
@@ -2039,16 +2040,26 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     either way. The page had this blind spot before the branch.
   - The risk clause keys on the separator rule only. Without beets' `^\.`/`\.$` an artist tag
     of exactly `..` also escapes (`normpath(os.path.join(...))`, `library/models.py` ~1298,
-    one folder above the library). Rare; widening the gate can wait.
+    one folder above the library). Rare; widening the gate can wait. And "no artist tag" is
+    strictly "the template's FIRST field renders empty": with `$genre/$albumartist/…` a
+    genre-less album escapes and an artist-less one does not (measured through
+    `Item.destination`). True for beets' default and the starter, which start with
+    `$albumartist`.
   - Feedback on an "Add recommended rules" press, for both outcomes: a press that adds rows is
-    silent to a screen reader (the warning just unmounts), and a press that changes nothing is
+    not reliably announced (the warning unmounts, and "Unsaved changes. Save, then Apply."
+    mounts WITH its text, which a status line does not reliably read out; from an
+    already-dirty draft nothing new appears at all), and a press that changes nothing is
     silent to everyone, as it was before the branch. The branch built a no-change line with a
     re-announce counter and deleted it in review (it spoke only on the rare path and dropped
-    the old setter's side effect untested). One design question. Related: after a press that
-    adds rows, the button drops ~286 px below the fold with focus on it.
+    the old setter's side effect untested). One design question. Related: a press that adds
+    beets' nine rows moves the button (focus on it) down 322 px at 1280×900 and 658 px at
+    360×800.
   - At 360 px a replace row wraps so the `→` ends line 1 pointing at nothing, and long
-    patterns are cut off (`[‘’\u02l`). Older than the branch; the button now makes the list
-    14 rows long.
+    patterns are cut off (the `\uXXXX` escapes are literal text, so `[‘’ʼ]`
+    loses its end). Older than the branch; the button now makes the list 14 rows long.
+  - Removing a replace row (or a custom path rule) with its Remove button drops keyboard
+    focus to `<body>`. Same on `main`; no shared focus-after-remove helper exists (only
+    `ArtistImageEditPanel.tsx` ~139 and `FolderBrowserDialog.tsx` ~145-402 move focus).
   - The warning is a `StatusBanner`, so it carries `role="alert"`: see the StatusBanner
     role/alignment entry (search `role opt-out`), which now lists this call site.
 
